@@ -22,8 +22,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import requests
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QTextCursor
+from PySide6.QtCore import QRect, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -45,6 +45,8 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -82,6 +84,9 @@ QMainWindow, QWidget {
     color: #e6edf3;
     font-family: "Inter", "Segoe UI", "Noto Sans", sans-serif;
     font-size: 13px;
+}
+QLabel, QCheckBox {
+    background-color: transparent;
 }
 QFrame#PanelCard {
     background-color: #161b22;
@@ -215,12 +220,35 @@ QPushButton#DangerBtn:hover {
 QPushButton#PresetBtn {
     background-color: #161b22;
     border: 1px solid #30363d;
-    padding: 5px 8px;
-    font-size: 12px;
+    padding: 5px 6px;
+    font-size: 11px;
 }
 QPushButton#PresetBtn:hover {
     border-color: #58a6ff;
     color: #58a6ff;
+}
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+QScrollArea > QWidget > QWidget {
+    background-color: transparent;
+}
+QScrollBar:vertical {
+    background-color: #0d1117;
+    width: 8px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background-color: #30363d;
+    border-radius: 4px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #8b949e;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
 }
 QSplitter::handle {
     background-color: #30363d;
@@ -495,7 +523,7 @@ class ApiKeysDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("LLM API Keys Manager")
-        self.setMinimumWidth(720)
+        self.setMinimumWidth(560)
         if parent is None:
             self.setStyleSheet(DARK_STYLESHEET)
 
@@ -507,11 +535,19 @@ class ApiKeysDialog(QDialog):
         self._active_workers: set[TestKeyWorker] = set()
 
         self._build_ui()
+        self._fit_dialog_to_screen()
+
+    def _fit_dialog_to_screen(self):
+        screen = QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen is not None else QRect(0, 0, 1280, 720)
+        w = min(680, int(avail.width() * 0.9))
+        h = min(600, int(avail.height() * 0.88))
+        self.resize(w, h)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         header = QLabel("Configure LLM Provider API Keys")
         header.setStyleSheet("font-size: 15px; font-weight: 700; color: #58a6ff;")
@@ -523,6 +559,16 @@ class ApiKeysDialog(QDialog):
         sub.setStyleSheet("color: #8b949e; font-size: 12px;")
         sub.setWordWrap(True)
         layout.addWidget(sub)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        scroll_body = QWidget()
+        scroll_layout = QVBoxLayout(scroll_body)
+        scroll_layout.setContentsMargins(0, 0, 4, 0)
+        scroll_layout.setSpacing(10)
 
         # Standard cloud providers card
         providers_card = QFrame()
@@ -555,7 +601,7 @@ class ApiKeysDialog(QDialog):
             grid.addWidget(test_btn, row, 4)
             self._update_badge(pkey)
 
-        layout.addWidget(providers_card)
+        scroll_layout.addWidget(providers_card)
 
         # Custom / Local OpenAI-compatible endpoint card
         custom_meta = PROVIDER_REGISTRY.get("custom", {})
@@ -611,7 +657,11 @@ class ApiKeysDialog(QDialog):
 
         custom_layout.addLayout(custom_grid)
         self._update_badge("custom")
-        layout.addWidget(custom_card)
+        scroll_layout.addWidget(custom_card)
+        scroll_layout.addStretch()
+
+        scroll.setWidget(scroll_body)
+        layout.addWidget(scroll, 1)
 
         self.test_status_lbl = QLabel("")
         self.test_status_lbl.setWordWrap(True)
@@ -762,7 +812,6 @@ class KaliGuiWindow(QMainWindow):
     def __init__(self, store: Optional[ProjectStore] = None):
         super().__init__()
         self.setWindowTitle("Kali MCP AI Workbench")
-        self.resize(1460, 880)
 
         self.store = store or ProjectStore()
         self.current_engagement_id: int = 1
@@ -779,6 +828,7 @@ class KaliGuiWindow(QMainWindow):
 
         self._build_ui()
         self.setStyleSheet(DARK_STYLESHEET)
+        self._fit_to_screen()
         self._load_provider_defaults()
         self._load_engagements_combo()
         self.refresh_server_status()
@@ -790,40 +840,57 @@ class KaliGuiWindow(QMainWindow):
         self.elapsed_timer = QTimer(self)
         self.elapsed_timer.timeout.connect(self._update_elapsed_label)
 
+    def _fit_to_screen(self):
+        screen = QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen is not None else QRect(0, 0, 1280, 720)
+        w = min(1320, max(820, int(avail.width() * 0.94)))
+        h = min(800, max(600, int(avail.height() * 0.92)))
+        x = avail.x() + (avail.width() - w) // 2
+        y = avail.y() + (avail.height() - h) // 2
+        self.setGeometry(x, y, w, h)
+        self.main_splitter.setSizes([int(w * 0.36), int(w * 0.64)])
+
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(10, 10, 10, 10)
-        root_layout.setSpacing(8)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(6)
 
-        # --- Top Bar ---
+        # --- Top Bar (Two-Row Compact Layout) ---
         top_bar = QFrame()
         top_bar.setObjectName("TopBar")
-        top_layout = QHBoxLayout(top_bar)
-        top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(8)
+        self.top_bar = top_bar
+        top_vbox = QVBoxLayout(top_bar)
+        top_vbox.setContentsMargins(10, 6, 10, 6)
+        top_vbox.setSpacing(6)
+
+        # Row 1: Brand | Project | stretch | Server status & controls
+        top_row1 = QHBoxLayout()
+        top_row1.setSpacing(6)
 
         title_lbl = QLabel("KALI MCP AI WORKBENCH")
-        title_lbl.setStyleSheet("font-size: 14px; font-weight: 800; color: #58a6ff; letter-spacing: 0.8px;")
-        top_layout.addWidget(title_lbl)
+        title_lbl.setStyleSheet("font-size: 13px; font-weight: 800; color: #58a6ff; letter-spacing: 0.6px;")
+        top_row1.addWidget(title_lbl)
 
-        top_layout.addWidget(QLabel("Project:"))
+        top_row1.addWidget(QLabel("Project:"))
         self.engagement_combo = QComboBox()
-        self.engagement_combo.setMinimumWidth(170)
+        self.engagement_combo.setMinimumWidth(140)
         self.engagement_combo.currentIndexChanged.connect(self._on_engagement_changed)
-        top_layout.addWidget(self.engagement_combo)
+        top_row1.addWidget(self.engagement_combo)
 
         btn_new_proj = QPushButton("+ New")
         btn_new_proj.clicked.connect(self.create_new_engagement)
         btn_del_proj = QPushButton("Del")
         btn_del_proj.clicked.connect(self.delete_current_engagement)
-        top_layout.addWidget(btn_new_proj)
-        top_layout.addWidget(btn_del_proj)
+        top_row1.addWidget(btn_new_proj)
+        top_row1.addWidget(btn_del_proj)
+
+        top_row1.addStretch()
 
         self.server_status_lbl = QLabel("● Checking...")
         self.server_status_lbl.setStyleSheet("color: #d29922; font-weight: 600;")
-        top_layout.addWidget(self.server_status_lbl)
+        top_row1.addWidget(self.server_status_lbl)
 
         self.btn_start_srv = QPushButton("Start")
         self.btn_start_srv.clicked.connect(lambda: self.run_server_action("start"))
@@ -831,41 +898,51 @@ class KaliGuiWindow(QMainWindow):
         self.btn_restart_srv.clicked.connect(lambda: self.run_server_action("restart"))
         self.btn_stop_srv = QPushButton("Stop")
         self.btn_stop_srv.clicked.connect(lambda: self.run_server_action("stop"))
-        top_layout.addWidget(self.btn_start_srv)
-        top_layout.addWidget(self.btn_restart_srv)
-        top_layout.addWidget(self.btn_stop_srv)
+        top_row1.addWidget(self.btn_start_srv)
+        top_row1.addWidget(self.btn_restart_srv)
+        top_row1.addWidget(self.btn_stop_srv)
 
-        top_layout.addStretch()
+        # Row 2: LLM Provider, Model, API Keys | stretch
+        top_row2 = QHBoxLayout()
+        top_row2.setSpacing(6)
 
-        top_layout.addWidget(QLabel("LLM:"))
+        top_row2.addWidget(QLabel("LLM:"))
         self.provider_combo = QComboBox()
         for key, meta in PROVIDER_REGISTRY.items():
             self.provider_combo.addItem(str(meta.get("label", key)), key)
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        top_layout.addWidget(self.provider_combo)
+        top_row2.addWidget(self.provider_combo)
 
         self.model_combo = QComboBox()
         self.model_combo.setEditable(True)
         self.model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.model_combo.setMinimumWidth(250)
-        top_layout.addWidget(self.model_combo)
+        self.model_combo.setMinimumWidth(180)
+        self.model_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        top_row2.addWidget(self.model_combo, 1)
 
         self.btn_api_keys = QPushButton("🔑 API Keys")
         self.btn_api_keys.setToolTip("Configure and test API keys for OpenAI, Gemini, Claude, Grok, NVIDIA, or Custom")
         self.btn_api_keys.clicked.connect(self.open_api_keys_dialog)
-        top_layout.addWidget(self.btn_api_keys)
+        top_row2.addWidget(self.btn_api_keys)
+        top_row2.addStretch(1)
+
+        top_vbox.addLayout(top_row1)
+        top_vbox.addLayout(top_row2)
 
         root_layout.addWidget(top_bar)
 
         # --- Main Side-by-Side Splitter ---
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        root_layout.addWidget(main_splitter, 1)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+        root_layout.addWidget(self.main_splitter, 1)
 
         # ================= LEFT PANE: Target & Controls =================
         left_widget = QWidget()
+        left_widget.setMinimumWidth(300)
+        self.left_widget = left_widget
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 6, 0)
-        left_layout.setSpacing(8)
+        left_layout.setContentsMargins(0, 0, 4, 0)
+        left_layout.setSpacing(6)
 
         target_card = QFrame()
         target_card.setObjectName("PanelCard")
@@ -961,8 +1038,8 @@ class KaliGuiWindow(QMainWindow):
         self.prompt_input.setPlaceholderText(
             "Enter AI instruction (or shell command when Direct Tool = Custom Shell). Leave blank for quick recon on Target."
         )
-        self.prompt_input.setMinimumHeight(80)
-        self.prompt_input.setMaximumHeight(130)
+        self.prompt_input.setMinimumHeight(64)
+        self.prompt_input.setMaximumHeight(110)
         tc_layout.addWidget(self.prompt_input)
 
         direct_row = QHBoxLayout()
@@ -1014,25 +1091,33 @@ class KaliGuiWindow(QMainWindow):
         action_row.addWidget(self.btn_stop, 1)
         tc_layout.addLayout(action_row)
 
-        left_layout.addWidget(target_card)
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setWidget(target_card)
+        left_layout.addWidget(left_scroll, 3)
 
         # History Card (SQLite persisted per engagement)
         hist_card = QFrame()
         hist_card.setObjectName("PanelCard")
         hc_layout = QVBoxLayout(hist_card)
-        hc_layout.setSpacing(6)
+        hc_layout.setContentsMargins(8, 8, 8, 8)
+        hc_layout.setSpacing(5)
 
         hist_header = QHBoxLayout()
         lbl_hist = QLabel("Saved Scan History")
         lbl_hist.setObjectName("SectionTitle")
         hist_header.addWidget(lbl_hist)
         hist_header.addStretch()
-        btn_reset_chat = QPushButton("Reset AI Context")
+        btn_reset_chat = QPushButton("Reset AI")
+        btn_reset_chat.setToolTip("Reset AI conversation context")
         btn_reset_chat.clicked.connect(self.reset_ai_context)
         hist_header.addWidget(btn_reset_chat)
         hc_layout.addLayout(hist_header)
 
         self.history_list = QListWidget()
+        self.history_list.setMinimumHeight(70)
         self.history_list.itemClicked.connect(self._on_history_clicked)
         hc_layout.addWidget(self.history_list, 1)
 
@@ -1040,8 +1125,10 @@ class KaliGuiWindow(QMainWindow):
 
         # ================= RIGHT PANE: Output, Findings & Notes =================
         right_widget = QWidget()
+        right_widget.setMinimumWidth(420)
+        self.right_widget = right_widget
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(6, 0, 0, 0)
+        right_layout.setContentsMargins(4, 0, 0, 0)
         right_layout.setSpacing(6)
 
         # Inline Approval Banner
@@ -1082,12 +1169,15 @@ class KaliGuiWindow(QMainWindow):
         raw_layout.setSpacing(6)
 
         raw_hdr = QHBoxLayout()
-        lbl_raw = QLabel("Raw Tool Output / Terminal Log")
+        raw_hdr.setSpacing(6)
+        lbl_raw = QLabel("Raw Tool Output")
         lbl_raw.setObjectName("SectionTitle")
+        lbl_raw.setToolTip("Raw Tool Output / Terminal Log")
         raw_hdr.addWidget(lbl_raw)
         raw_hdr.addStretch()
 
-        self.btn_analyze_raw = QPushButton("🤖 Analyze Output with AI")
+        self.btn_analyze_raw = QPushButton("🤖 Analyze")
+        self.btn_analyze_raw.setToolTip("Analyze current raw output with AI")
         self.btn_analyze_raw.clicked.connect(self.analyze_current_raw_output)
         btn_copy_raw = QPushButton("Copy")
         btn_copy_raw.clicked.connect(lambda: self._copy_text(self.raw_output.toPlainText()))
@@ -1114,8 +1204,10 @@ class KaliGuiWindow(QMainWindow):
         ai_layout.setSpacing(6)
 
         ai_hdr = QHBoxLayout()
-        lbl_ai = QLabel("AI Analysis & Findings (Live Streaming)")
+        ai_hdr.setSpacing(6)
+        lbl_ai = QLabel("AI Analysis (Live)")
         lbl_ai.setObjectName("SectionTitle")
+        lbl_ai.setToolTip("AI Analysis & Findings (Live Streaming)")
         ai_hdr.addWidget(lbl_ai)
         ai_hdr.addStretch()
 
@@ -1139,7 +1231,7 @@ class KaliGuiWindow(QMainWindow):
 
         output_splitter.addWidget(raw_card)
         output_splitter.addWidget(ai_card)
-        output_splitter.setSizes([430, 330])
+        output_splitter.setSizes([320, 260])
 
         self.right_tabs.addTab(live_tab, "📺 Live Output && AI")
 
@@ -1147,11 +1239,13 @@ class KaliGuiWindow(QMainWindow):
         findings_tab = QWidget()
         ft_layout = QVBoxLayout(findings_tab)
         ft_layout.setContentsMargins(0, 6, 0, 0)
-        ft_layout.setSpacing(8)
+        ft_layout.setSpacing(6)
 
         ft_toolbar = QHBoxLayout()
+        ft_toolbar.setSpacing(6)
         self.findings_filter_input = QLineEdit()
-        self.findings_filter_input.setPlaceholderText("Filter findings (host, port, service, keyword)...")
+        self.findings_filter_input.setMinimumWidth(110)
+        self.findings_filter_input.setPlaceholderText("Filter findings (host, port, service)...")
         self.findings_filter_input.textChanged.connect(self._render_findings_table)
 
         self.severity_filter_combo = QComboBox()
@@ -1159,11 +1253,13 @@ class KaliGuiWindow(QMainWindow):
             self.severity_filter_combo.addItem(s)
         self.severity_filter_combo.currentIndexChanged.connect(self._render_findings_table)
 
-        self.btn_followup = QPushButton("⚡ Run Follow-Up on Selected")
+        self.btn_followup = QPushButton("⚡ Follow-Up")
+        self.btn_followup.setToolTip("Run AI follow-up on selected finding")
         self.btn_followup.setObjectName("DirectBtn")
         self.btn_followup.clicked.connect(self.run_selected_followup)
 
-        btn_clear_findings = QPushButton("Clear Findings")
+        btn_clear_findings = QPushButton("Clear")
+        btn_clear_findings.setToolTip("Clear all findings for this engagement")
         btn_clear_findings.clicked.connect(self.clear_engagement_findings)
 
         ft_toolbar.addWidget(self.findings_filter_input, 1)
@@ -1187,20 +1283,25 @@ class KaliGuiWindow(QMainWindow):
         notes_tab = QWidget()
         nt_layout = QVBoxLayout(notes_tab)
         nt_layout.setContentsMargins(0, 6, 0, 0)
-        nt_layout.setSpacing(8)
+        nt_layout.setSpacing(6)
 
         nt_bar = QHBoxLayout()
-        lbl_notes = QLabel("Lab / CTF Notes, Credentials & Flags (Auto-saved per Project)")
+        nt_bar.setSpacing(6)
+        lbl_notes = QLabel("Lab / CTF Notes")
         lbl_notes.setObjectName("SectionTitle")
+        lbl_notes.setToolTip("Lab / CTF Notes, Credentials & Flags (Auto-saved per Project)")
         nt_bar.addWidget(lbl_notes)
         nt_bar.addStretch()
 
-        btn_save_notes = QPushButton("💾 Save Notes")
+        btn_save_notes = QPushButton("💾 Save")
+        btn_save_notes.setToolTip("Save engagement notes")
         btn_save_notes.clicked.connect(self.save_current_notes)
-        btn_export_html = QPushButton("📄 Export HTML Report")
+        btn_export_html = QPushButton("📄 HTML")
+        btn_export_html.setToolTip("Export full engagement HTML report")
         btn_export_html.setObjectName("PrimaryBtn")
         btn_export_html.clicked.connect(lambda: self.export_full_report("html"))
-        btn_export_md = QPushButton("📝 Export Markdown")
+        btn_export_md = QPushButton("📝 Markdown")
+        btn_export_md.setToolTip("Export full engagement Markdown report")
         btn_export_md.setObjectName("DirectBtn")
         btn_export_md.clicked.connect(lambda: self.export_full_report("md"))
 
@@ -1217,9 +1318,8 @@ class KaliGuiWindow(QMainWindow):
 
         self.right_tabs.addTab(notes_tab, "📝 Notes && Report Export")
 
-        main_splitter.addWidget(left_widget)
-        main_splitter.addWidget(right_widget)
-        main_splitter.setSizes([470, 960])
+        self.main_splitter.addWidget(self.left_widget)
+        self.main_splitter.addWidget(self.right_widget)
 
         self._set_status("Ready. Enter Target on the left and run AI, Direct Tool, or a Playbook.")
 
@@ -1295,17 +1395,22 @@ class KaliGuiWindow(QMainWindow):
 
     def refresh_server_status(self):
         health = get_kali_server_health(timeout=1.5)
+        port_part = DEFAULT_KALI_SERVER_URL.rstrip("/").rsplit(":", 1)[-1]
+        port_label = f":{port_part}" if port_part.isdigit() else ""
         if health.get("ok"):
             tools_map = (health.get("data") or {}).get("tools_status", {})
             ready_count = sum(1 for v in tools_map.values() if v)
-            suffix = f" | {ready_count}/{len(tools_map)} core tools" if tools_map else ""
-            self.server_status_lbl.setText(f"● Running ({DEFAULT_KALI_SERVER_URL}{suffix})")
+            suffix = f" ({ready_count}/{len(tools_map)})" if tools_map else ""
+            self.server_status_lbl.setText(f"● Running {port_label}{suffix}".strip())
             self.server_status_lbl.setStyleSheet("color: #3fb950; font-weight: 700;")
+            tip = DEFAULT_KALI_SERVER_URL
             if tools_map:
-                self.server_status_lbl.setToolTip(json.dumps(tools_map, indent=2))
+                tip += "\n" + json.dumps(tools_map, indent=2)
+            self.server_status_lbl.setToolTip(tip)
         else:
-            self.server_status_lbl.setText("● Offline (127.0.0.1:5000)")
+            self.server_status_lbl.setText(f"● Offline {port_label}".strip())
             self.server_status_lbl.setStyleSheet("color: #f85149; font-weight: 700;")
+            self.server_status_lbl.setToolTip(DEFAULT_KALI_SERVER_URL)
 
     def run_server_action(self, action: str):
         if self.server_worker and self.server_worker.isRunning():
