@@ -27,19 +27,26 @@ build/
 dist/
 *.spec
 
-# Logs, local databases & scan exports
+# Logs, local databases, playbooks & scan exports
 *.log
 *.bak
 *.tmp
+*.pid
 *.db
 *.db-wal
 *.db-shm
 *.sqlite
 *.sqlite3
+prompt.txt
+prompt*.txt
+playbooks/
+reports/
+logs/
 scan-output*.txt
 analysis*.md
 kali-report*.html
 kali-report*.md
+.kali_ai_history
 
 # IDE / OS files
 .vscode/
@@ -47,3 +54,6 @@ kali-report*.md
 pyrefly.toml
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~

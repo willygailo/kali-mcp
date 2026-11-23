@@ -145,6 +145,10 @@ NVIDIA_API_KEY="nvapi-your-nvidia-api-key"
   ```bash
   ./run-agent.sh -y "Check HTTP headers and open ports on 127.0.0.1"
   ```
+- **Load a custom audit playbook (`--playbook` or in-chat `/playbook`):**
+  ```bash
+  ./run-agent.sh --playbook prompt.txt
+  ```
 - **Select a specific LLM provider:**
   ```bash
   ./run-agent.sh --provider openai --model gpt-4o
@@ -165,6 +169,7 @@ NVIDIA_API_KEY="nvapi-your-nvidia-api-key"
 | `--model MODEL` | Override the default model ID |
 | `--api-key API_KEY` | Custom API key (auto-detects provider by prefix if `--provider` is omitted) |
 | `--base-url BASE_URL` | Custom OpenAI-compatible base URL |
+| `--playbook FILE` | Load a custom audit playbook / system prompt file (e.g., `prompt.txt`) |
 | `--yes`, `-y` | Auto-approve all tool calls without confirmation prompts |
 
 </details>
