@@ -21,10 +21,16 @@ env/
 # PyArmor build & local editable source (never push readable source)
 src_private/
 .pyarmor/
+pyarmor*.log
+pyarmor.report.bug
+build/
 dist/
+*.spec
 
 # Logs, local databases & scan exports
 *.log
+*.bak
+*.tmp
 *.db
 *.db-wal
 *.db-shm
