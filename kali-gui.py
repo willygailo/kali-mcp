@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -58,12 +59,15 @@ from kali_core import (
     AgentCallbacks,
     DEFAULT_KALI_SERVER_URL,
     PLAYBOOKS,
+    PROVIDER_REGISTRY,
     SYSTEM_PROMPT,
     call_kali_api,
     create_openai_client,
     get_kali_server_health,
     resolve_provider_config,
     run_chat_turn,
+    save_env_keys,
+    test_provider_connection,
 )
 from kali_parsers import parse_tool_output
 from kali_reports import generate_html_report, generate_markdown_report
@@ -452,6 +456,308 @@ class ServerActionWorker(QThread):
             self.completed.emit(False, str(exc))
 
 
+class TestKeyWorker(QThread):
+    """Runs a lightweight provider connectivity check in a background thread."""
+
+    completed = Signal(str, bool, str)
+
+    def __init__(
+        self,
+        provider: str,
+        api_key: Optional[str],
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ):
+        super().__init__()
+        self.provider = provider
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url
+
+    def run(self):
+        try:
+            res = test_provider_connection(
+                provider=self.provider,
+                api_key=self.api_key,
+                model=self.model,
+                base_url=self.base_url,
+            )
+            ok = bool(res.get("ok"))
+            msg = str(res.get("message") or ("Connection successful." if ok else "Connection failed."))
+            self.completed.emit(self.provider, ok, msg)
+        except Exception as exc:
+            self.completed.emit(self.provider, False, str(exc))
+
+
+class ApiKeysDialog(QDialog):
+    """Modal dialog for viewing, testing, and saving LLM provider API keys to .env."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("LLM API Keys Manager")
+        self.setMinimumWidth(720)
+        if parent is None:
+            self.setStyleSheet(DARK_STYLESHEET)
+
+        self.saved_path: Optional[str] = None
+        self.key_inputs: Dict[str, QLineEdit] = {}
+        self.status_badges: Dict[str, QLabel] = {}
+        self.show_buttons: Dict[str, QPushButton] = {}
+        self.test_buttons: Dict[str, QPushButton] = {}
+        self._active_workers: set[TestKeyWorker] = set()
+
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        header = QLabel("Configure LLM Provider API Keys")
+        header.setStyleSheet("font-size: 15px; font-weight: 700; color: #58a6ff;")
+        layout.addWidget(header)
+
+        sub = QLabel(
+            "Keys are saved locally to .env (chmod 600) and applied immediately to the active session."
+        )
+        sub.setStyleSheet("color: #8b949e; font-size: 12px;")
+        sub.setWordWrap(True)
+        layout.addWidget(sub)
+
+        # Standard cloud providers card
+        providers_card = QFrame()
+        providers_card.setObjectName("PanelCard")
+        grid = QGridLayout(providers_card)
+        grid.setContentsMargins(12, 12, 12, 12)
+        grid.setSpacing(8)
+        grid.setColumnStretch(2, 1)
+
+        standard_keys = [k for k in PROVIDER_REGISTRY if k != "custom"]
+        for row, pkey in enumerate(standard_keys):
+            meta = PROVIDER_REGISTRY[pkey]
+            cfg = resolve_provider_config(provider=pkey)
+            initial_key = str(cfg.get("api_key") or "")
+
+            name_lbl = QLabel(str(meta.get("label", pkey)))
+            name_lbl.setStyleSheet("font-weight: 700;")
+            name_lbl.setToolTip(str(meta.get("env_key", "")))
+
+            key_edit, show_btn, test_btn, badge_lbl = self._create_key_controls(
+                pkey,
+                initial_key,
+                f"Enter {meta.get('env_key', 'API_KEY')}...",
+            )
+
+            grid.addWidget(name_lbl, row, 0)
+            grid.addWidget(badge_lbl, row, 1)
+            grid.addWidget(key_edit, row, 2)
+            grid.addWidget(show_btn, row, 3)
+            grid.addWidget(test_btn, row, 4)
+            self._update_badge(pkey)
+
+        layout.addWidget(providers_card)
+
+        # Custom / Local OpenAI-compatible endpoint card
+        custom_meta = PROVIDER_REGISTRY.get("custom", {})
+        custom_card = QFrame()
+        custom_card.setObjectName("PanelCard")
+        custom_layout = QVBoxLayout(custom_card)
+        custom_layout.setContentsMargins(12, 12, 12, 12)
+        custom_layout.setSpacing(8)
+
+        custom_hdr = QHBoxLayout()
+        custom_title = QLabel(str(custom_meta.get("label", "Custom / Local")))
+        custom_title.setObjectName("SectionTitle")
+        custom_hdr.addWidget(custom_title)
+        custom_hdr.addStretch()
+
+        custom_key_edit, custom_show_btn, custom_test_btn, custom_badge = self._create_key_controls(
+            "custom",
+            os.environ.get(str(custom_meta.get("env_key", "CUSTOM_API_KEY")), ""),
+            "Optional API key (leave blank for local Ollama / LM Studio)",
+        )
+        custom_hdr.addWidget(custom_badge)
+        custom_hdr.addWidget(custom_test_btn)
+        custom_layout.addLayout(custom_hdr)
+
+        custom_grid = QGridLayout()
+        custom_grid.setSpacing(8)
+        custom_grid.setColumnStretch(1, 1)
+
+        base_url_env = str(custom_meta.get("base_url_env", "CUSTOM_BASE_URL"))
+        model_env = str(custom_meta.get("model_env", "CUSTOM_MODEL"))
+        default_custom_model = str(custom_meta.get("default_model", "llama3.2"))
+
+        self.custom_base_url_input = QLineEdit(os.environ.get(base_url_env, ""))
+        self.custom_base_url_input.setPlaceholderText("e.g. http://localhost:11434/v1")
+        self.custom_base_url_input.textChanged.connect(lambda _txt: self._update_badge("custom"))
+
+        self.custom_api_key_input = custom_key_edit
+
+        self.custom_model_input = QLineEdit(os.environ.get(model_env, ""))
+        self.custom_model_input.setPlaceholderText(f"e.g. {default_custom_model}")
+
+        custom_key_row = QHBoxLayout()
+        custom_key_row.setSpacing(6)
+        custom_key_row.addWidget(self.custom_api_key_input, 1)
+        custom_key_row.addWidget(custom_show_btn)
+
+        custom_grid.addWidget(QLabel("Base URL:"), 0, 0)
+        custom_grid.addWidget(self.custom_base_url_input, 0, 1)
+        custom_grid.addWidget(QLabel("API Key:"), 1, 0)
+        custom_grid.addLayout(custom_key_row, 1, 1)
+        custom_grid.addWidget(QLabel("Model:"), 2, 0)
+        custom_grid.addWidget(self.custom_model_input, 2, 1)
+
+        custom_layout.addLayout(custom_grid)
+        self._update_badge("custom")
+        layout.addWidget(custom_card)
+
+        self.test_status_lbl = QLabel("")
+        self.test_status_lbl.setWordWrap(True)
+        self.test_status_lbl.setStyleSheet("color: #8b949e; font-size: 12px;")
+        layout.addWidget(self.test_status_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        self.btn_close = QPushButton("Close")
+        self.btn_close.clicked.connect(self.reject)
+
+        self.btn_save = QPushButton("💾 Save to .env")
+        self.btn_save.setObjectName("PrimaryBtn")
+        self.btn_save.clicked.connect(self._save_keys)
+
+        btn_row.addWidget(self.btn_close)
+        btn_row.addWidget(self.btn_save)
+        layout.addLayout(btn_row)
+
+    def _create_key_controls(
+        self,
+        provider_key: str,
+        initial_key: str,
+        placeholder: str,
+    ) -> tuple[QLineEdit, QPushButton, QPushButton, QLabel]:
+        key_edit = QLineEdit(initial_key)
+        key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        key_edit.setPlaceholderText(placeholder)
+        key_edit.textChanged.connect(lambda _txt, k=provider_key: self._update_badge(k))
+
+        show_btn = QPushButton("Show")
+        show_btn.setCheckable(True)
+        show_btn.setFixedWidth(58)
+        show_btn.toggled.connect(lambda checked, k=provider_key: self._toggle_key_visibility(k, checked))
+
+        test_btn = QPushButton("Test")
+        test_btn.setFixedWidth(74)
+        test_btn.clicked.connect(lambda _=False, k=provider_key: self._run_test(k))
+
+        badge_lbl = QLabel()
+        badge_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge_lbl.setFixedWidth(88)
+
+        self.key_inputs[provider_key] = key_edit
+        self.show_buttons[provider_key] = show_btn
+        self.test_buttons[provider_key] = test_btn
+        self.status_badges[provider_key] = badge_lbl
+        return key_edit, show_btn, test_btn, badge_lbl
+
+    def _toggle_key_visibility(self, provider_key: str, checked: bool):
+        edit = self.key_inputs[provider_key]
+        btn = self.show_buttons[provider_key]
+        edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password)
+        btn.setText("Hide" if checked else "Show")
+
+    def _update_badge(self, provider_key: str):
+        badge = self.status_badges[provider_key]
+        if provider_key == "custom":
+            configured = bool(
+                self.custom_base_url_input.text().strip() or self.custom_api_key_input.text().strip()
+            )
+        else:
+            configured = bool(self.key_inputs[provider_key].text().strip())
+
+        badge.setText("Configured" if configured else "Missing")
+        if configured:
+            badge.setStyleSheet(
+                "background-color: #122d1b; color: #3fb950; border: 1px solid #2ea043; "
+                "border-radius: 10px; padding: 2px 8px; font-size: 11px; font-weight: 700;"
+            )
+        else:
+            badge.setStyleSheet(
+                "background-color: #2d1b16; color: #f85149; border: 1px solid #da3633; "
+                "border-radius: 10px; padding: 2px 8px; font-size: 11px; font-weight: 700;"
+            )
+
+    def _set_test_feedback(self, provider_key: str, ok: Optional[bool], message: str):
+        label = PROVIDER_REGISTRY.get(provider_key, {}).get("label", provider_key)
+        if ok is None:
+            self.test_status_lbl.setStyleSheet("color: #d29922; font-weight: 600;")
+            self.test_status_lbl.setText(f"⏳ {label}: {message}")
+        elif ok:
+            self.test_status_lbl.setStyleSheet("color: #3fb950; font-weight: 600;")
+            self.test_status_lbl.setText(f"✓ {label}: {message}")
+        else:
+            self.test_status_lbl.setStyleSheet("color: #f85149; font-weight: 600;")
+            self.test_status_lbl.setText(f"✗ {label}: {message}")
+
+    def _run_test(self, provider_key: str):
+        meta = PROVIDER_REGISTRY.get(provider_key, {})
+        api_key = self.key_inputs[provider_key].text().strip() or None
+        if provider_key == "custom":
+            base_url = self.custom_base_url_input.text().strip() or None
+            model = self.custom_model_input.text().strip() or meta.get("default_model")
+            if not base_url:
+                self._set_test_feedback(provider_key, False, "Enter a Base URL before testing Custom / Local.")
+                return
+        else:
+            base_url = meta.get("default_base_url")
+            model = meta.get("default_model")
+            if not api_key:
+                self._set_test_feedback(provider_key, False, f"Enter {meta.get('env_key', 'an API key')} first.")
+                return
+
+        btn = self.test_buttons[provider_key]
+        btn.setEnabled(False)
+        btn.setText("...")
+        self._set_test_feedback(provider_key, None, "Testing connection...")
+
+        worker = TestKeyWorker(provider=provider_key, api_key=api_key, model=model, base_url=base_url)
+        self._active_workers.add(worker)
+        worker.completed.connect(self._on_test_completed)
+        worker.finished.connect(lambda w=worker: self._on_worker_finished(w))
+        worker.start()
+
+    def _on_worker_finished(self, worker: TestKeyWorker):
+        self._active_workers.discard(worker)
+        worker.deleteLater()
+
+    def _on_test_completed(self, provider_key: str, ok: bool, message: str):
+        btn = self.test_buttons.get(provider_key)
+        if btn is not None:
+            btn.setEnabled(True)
+            btn.setText("Test")
+        self._set_test_feedback(provider_key, ok, message)
+
+    def _save_keys(self):
+        updates: Dict[str, str] = {}
+        for pkey, meta in PROVIDER_REGISTRY.items():
+            env_key = meta.get("env_key")
+            if env_key and pkey in self.key_inputs:
+                updates[str(env_key)] = self.key_inputs[pkey].text().strip()
+
+        custom_meta = PROVIDER_REGISTRY.get("custom", {})
+        base_url_env = custom_meta.get("base_url_env")
+        model_env = custom_meta.get("model_env")
+        if base_url_env:
+            updates[str(base_url_env)] = self.custom_base_url_input.text().strip()
+        if model_env:
+            updates[str(model_env)] = self.custom_model_input.text().strip()
+
+        self.saved_path = save_env_keys(updates)
+        self.accept()
+
+
 class KaliGuiWindow(QMainWindow):
     def __init__(self, store: Optional[ProjectStore] = None):
         super().__init__()
@@ -533,14 +839,21 @@ class KaliGuiWindow(QMainWindow):
 
         top_layout.addWidget(QLabel("LLM:"))
         self.provider_combo = QComboBox()
-        self.provider_combo.addItem("NVIDIA NIM", "nvidia")
-        self.provider_combo.addItem("OpenAI", "openai")
+        for key, meta in PROVIDER_REGISTRY.items():
+            self.provider_combo.addItem(str(meta.get("label", key)), key)
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         top_layout.addWidget(self.provider_combo)
 
-        self.model_input = QLineEdit()
-        self.model_input.setMinimumWidth(250)
-        top_layout.addWidget(self.model_input)
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(True)
+        self.model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model_combo.setMinimumWidth(250)
+        top_layout.addWidget(self.model_combo)
+
+        self.btn_api_keys = QPushButton("🔑 API Keys")
+        self.btn_api_keys.setToolTip("Configure and test API keys for OpenAI, Gemini, Claude, Grok, NVIDIA, or Custom")
+        self.btn_api_keys.clicked.connect(self.open_api_keys_dialog)
+        top_layout.addWidget(self.btn_api_keys)
 
         root_layout.addWidget(top_bar)
 
@@ -933,21 +1246,52 @@ class KaliGuiWindow(QMainWindow):
         self.elapsed_lbl.setText(f"⏱ {secs // 60:02d}:{secs % 60:02d}")
 
     # ---------------- Provider & Server Helpers ----------------
-    def _load_provider_defaults(self):
-        cfg = resolve_provider_config()
-        idx = self.provider_combo.findData(cfg["provider"])
+    def _populate_models(self, cfg: Dict[str, Any]):
+        models = [str(m) for m in (cfg.get("models") or [])]
+        selected = str(cfg.get("model") or "")
+        if selected and selected not in models:
+            models.insert(0, selected)
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        for m in models:
+            self.model_combo.addItem(m)
+        if selected:
+            self.model_combo.setCurrentText(selected)
+        line_edit = self.model_combo.lineEdit()
+        if line_edit is not None:
+            line_edit.setCursorPosition(0)
+        self.model_combo.blockSignals(False)
+
+    def _select_provider(self, provider: str):
+        idx = self.provider_combo.findData(provider)
         if idx >= 0:
             self.provider_combo.blockSignals(True)
             self.provider_combo.setCurrentIndex(idx)
             self.provider_combo.blockSignals(False)
-        self.model_input.setText(str(cfg["model"]))
-        self.model_input.setCursorPosition(0)
+
+    def _load_provider_defaults(self):
+        cfg = resolve_provider_config()
+        self._select_provider(str(cfg["provider"]))
+        self._populate_models(cfg)
 
     def _on_provider_changed(self):
         provider = self.provider_combo.currentData()
         cfg = resolve_provider_config(provider=provider)
-        self.model_input.setText(str(cfg["model"]))
-        self.model_input.setCursorPosition(0)
+        self._populate_models(cfg)
+
+    def open_api_keys_dialog(self) -> bool:
+        dlg = ApiKeysDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            current_provider = self.provider_combo.currentData()
+            cfg = resolve_provider_config(provider=current_provider)
+            if not cfg["api_key"] and cfg["provider"] != "custom":
+                cfg = resolve_provider_config()
+                self._select_provider(str(cfg["provider"]))
+            self._populate_models(cfg)
+            if dlg.saved_path:
+                self._set_status(f"API keys saved to {dlg.saved_path}", 4000)
+            return True
+        return False
 
     def refresh_server_status(self):
         health = get_kali_server_health(timeout=1.5)
@@ -1279,15 +1623,27 @@ class KaliGuiWindow(QMainWindow):
 
         self._persist_current_target()
         provider = self.provider_combo.currentData()
-        model = self.model_input.text().strip()
+        model = self.model_combo.currentText().strip()
         cfg = resolve_provider_config(provider=provider, model=model or None)
-        if not cfg["api_key"] and not cfg["base_url"]:
-            QMessageBox.critical(
-                self,
-                "Missing API Key",
-                f"No API key configured for {cfg['provider_label']}. Add it to .env or launch via ./run-gui.sh.",
+        if not cfg["api_key"] and cfg["provider"] != "custom":
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            msg_box.setWindowTitle("Missing API Key")
+            msg_box.setText(
+                f"No API key configured for {cfg['provider_label']} ({cfg['env_key']})."
             )
-            return
+            msg_box.setInformativeText("Open the API Keys Manager to add your key now?")
+            btn_open = msg_box.addButton("🔑 Open API Keys", QMessageBox.ButtonRole.AcceptRole)
+            msg_box.addButton(QMessageBox.StandardButton.Cancel)
+            msg_box.exec()
+            if msg_box.clickedButton() == btn_open and self.open_api_keys_dialog():
+                provider = self.provider_combo.currentData()
+                model = self.model_combo.currentText().strip()
+                cfg = resolve_provider_config(provider=provider, model=model or None)
+                if not cfg["api_key"] and cfg["provider"] != "custom":
+                    return
+            else:
+                return
 
         if not self._ensure_server_ready():
             return

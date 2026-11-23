@@ -2,8 +2,9 @@
 """
 Kali AI Terminal Agent
 -----------------------
-An interactive terminal assistant powered by OpenAI or NVIDIA NIM that interfaces with
-Kali Linux's mcp-kali-server (kali-server-mcp).
+An interactive terminal assistant powered by multiple LLM providers (NVIDIA NIM,
+ChatGPT / OpenAI, Google Gemini, Anthropic Claude, xAI Grok, or Custom / Local)
+that interfaces with Kali Linux's mcp-kali-server (kali-server-mcp).
 """
 
 import argparse
@@ -155,9 +156,9 @@ def main():
     parser.add_argument("prompt", nargs="*", help="Initial prompt (optional)")
     parser.add_argument(
         "--provider",
-        choices=["nvidia", "openai"],
+        choices=["nvidia", "openai", "gemini", "claude", "grok", "custom"],
         default=None,
-        help="Provider to use: 'nvidia' or 'openai' (default: nvidia if key present, else openai)",
+        help="LLM provider: nvidia, openai, gemini, claude, grok, or custom (auto-detected if omitted)",
     )
     parser.add_argument("--model", default=None, help="Model ID")
     parser.add_argument("--api-key", default=None, help="API Key")
@@ -172,9 +173,10 @@ def main():
         base_url=args.base_url,
     )
 
-    if not cfg["api_key"] and not cfg["base_url"]:
-        print(f"[-] Error: API key is not set for provider '{cfg['provider']}'.")
-        print("    Please pass --api-key or export NVIDIA_API_KEY / OPENAI_API_KEY")
+    if not cfg["api_key"] and cfg["provider"] != "custom":
+        env_key = cfg["env_key"]
+        print(f"[-] Error: API key is not set for provider '{cfg['provider']}' ({cfg['provider_label']}).")
+        print(f"    Please pass --api-key, add {env_key} to .env, or export {env_key}.")
         sys.exit(1)
 
     if not check_kali_server():

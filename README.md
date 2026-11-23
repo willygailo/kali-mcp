@@ -7,18 +7,18 @@
 <p align="center">
   <strong>🎯 Target &amp; Presets</strong> &nbsp;•&nbsp;
   <strong>⚡ Direct &amp; AI Scans</strong> &nbsp;•&nbsp;
-  <strong>🤖 NVIDIA NIM &amp; OpenAI</strong> &nbsp;•&nbsp;
+  <strong>🤖 Multi-Provider LLMs</strong> &nbsp;•&nbsp;
   <strong>📊 Side-by-Side Output</strong> &nbsp;•&nbsp;
   <strong>🛡️ Safe Tool Approval</strong>
 </p>
 
-> **AI-powered Offensive Security & Recon Assistant** for **Kali Linux** (`kali-server-mcp`) — featuring a dedicated **PySide6 Desktop GUI** (side-by-side layout) and an **Interactive Terminal Agent** powered by **NVIDIA NIM** (Nemotron) and **OpenAI**.
+> **AI-powered Offensive Security & Recon Assistant** for **Kali Linux** (`kali-server-mcp`) — featuring a dedicated **PySide6 Desktop GUI** (side-by-side layout) and an **Interactive Terminal Agent** with multi-provider LLM support (**ChatGPT / OpenAI**, **Google Gemini**, **Anthropic Claude**, **xAI Grok**, **NVIDIA NIM**, and **Custom / Local** OpenAI-compatible endpoints).
 
 <p align="center">
   <img src="https://img.shields.io/badge/Kali-Linux-557C94?style=flat-square&logo=kalilinux&logoColor=white" alt="Kali Linux" />
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/GUI-PySide6%20(Qt6)-41CD52?style=flat-square&logo=qt&logoColor=white" alt="PySide6" />
-  <img src="https://img.shields.io/badge/LLM-NVIDIA%20NIM%20%7C%20OpenAI-76B900?style=flat-square" alt="LLM Providers" />
+  <img src="https://img.shields.io/badge/LLM-OpenAI%20%7C%20Gemini%20%7C%20Claude%20%7C%20Grok%20%7C%20NIM-76B900?style=flat-square" alt="LLM Providers" />
   <a href="https://github.com/willygailo/kali-mcp/graphs/contributors">
     <img src="https://img.shields.io/github/contributors/willygailo/kali-mcp?style=flat-square&color=58a6ff" alt="Contributors" />
   </a>
@@ -39,7 +39,9 @@
 
 ## ✨ Features
 
+- **Multi-Provider LLM Support:** Switch seamlessly between **ChatGPT / OpenAI**, **Google Gemini**, **Anthropic Claude**, **xAI Grok**, **NVIDIA NIM**, and **Custom / Local** OpenAI-compatible servers (e.g., Ollama, vLLM, LM Studio) with automatic key-prefix detection and curated model presets.
 - **Side-by-Side Desktop GUI (`kali-gui.py`):**
+  - **Built-in `🔑 API Keys` Manager:** Configure, unmask/verify, live-test (`Test`), and securely save provider API keys directly to `.env` (`0600` permissions) from the top bar, alongside provider and editable model selectors.
   - **Project / Engagement Workspaces:** Switch between lab/CTF targets with persistent SQLite storage (`kali_store.py`) for scan history, findings, notes, and AI chat context.
   - **Left Pane (Controls):** Target input (`IP / Domain / URL`), 6 one-click presets, **Multi-Step Playbooks** (`Web Recon Pipeline`, `Network Audit Pipeline`), collapsible **Advanced Tool Options** (Ports, Extra Flags, Wordlist picker), Direct Tool runner, and live elapsed timer.
   - **Right Pane (Instant Results):** View **Raw Tool Output / Terminal Log** (top) and **Streaming AI Analysis & Findings** (bottom) side-by-side, plus a **Findings & Ports** table with severity filtering & follow-up triggers, and **Lab/CTF Notes + HTML/Markdown Report Export**.
@@ -63,7 +65,7 @@
 | `run-gui.sh` | One-command launcher that starts `kali-server-mcp` and opens the Desktop GUI |
 | `run-agent.sh` | One-command launcher that starts `kali-server-mcp` and opens the Terminal Agent |
 | `kali-mcp-manager.sh` | Control script for `/usr/bin/kali-server-mcp` (`start`, `stop`, `restart`, `status`) |
-| `.env.example` | Template for API keys (`NVIDIA_API_KEY`, `OPENAI_API_KEY`) |
+| `.env.example` | Template for provider API keys (`NVIDIA_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `CUSTOM_*`) |
 | `CONTRIBUTING.md` | Contribution workflow and verification guidelines |
 
 ---
@@ -78,20 +80,38 @@
 pip install openai requests PySide6 rich
 ```
 
-### 2. Configure API Keys
-Copy `.env.example` to `.env` and add your API key(s):
+### 2. Configure API Keys (`.env`)
+Copy `.env.example` to `.env` and add the API key(s) for any provider you want to use (or manage them directly inside the Desktop GUI via **`🔑 API Keys`**):
 
 ```bash
 cp .env.example .env
 ```
 
 ```env
-NVIDIA_API_KEY="nvapi-your-nvidia-api-key"
-NVIDIA_BASE_URL="https://integrate.api.nvidia.com/v1"
-NVIDIA_MODEL="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
-
-# Optional fallback
+# ChatGPT / OpenAI
 OPENAI_API_KEY="sk-your-openai-api-key"
+# OPENAI_MODEL="gpt-4o"
+
+# Google Gemini
+GEMINI_API_KEY="AIza-your-gemini-api-key"
+# GEMINI_MODEL="gemini-2.5-flash"
+
+# Anthropic Claude
+ANTHROPIC_API_KEY="sk-ant-your-anthropic-api-key"
+# ANTHROPIC_MODEL="claude-sonnet-4-5"
+
+# xAI Grok
+XAI_API_KEY="xai-your-xai-api-key"
+# XAI_MODEL="grok-3"
+
+# NVIDIA NIM
+NVIDIA_API_KEY="nvapi-your-nvidia-api-key"
+# NVIDIA_MODEL="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+
+# Custom / Local OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, etc.)
+# CUSTOM_BASE_URL="http://127.0.0.1:11434/v1"
+# CUSTOM_MODEL="llama3.2"
+# CUSTOM_API_KEY="ollama"
 ```
 
 ---
@@ -102,13 +122,15 @@ OPENAI_API_KEY="sk-your-openai-api-key"
 ```bash
 ./run-gui.sh
 ```
-1. Enter your **Target** (`IP`, `domain`, or `URL`) in the left pane.
-2. Pick a **Quick Preset** or type a custom prompt.
-3. Click **`▶ Run with AI`** for automated scanning + AI analysis, or **`⚡ Direct Tool`** for immediate raw tool output.
-4. Inspect **Raw Tool Output** and **AI Analysis** side-by-side in the right pane, and export results via `Save .txt` or `Save .md`.
+1. Click **`🔑 API Keys`** in the top bar to add, test, and save your **ChatGPT / OpenAI**, **Google Gemini**, **Anthropic Claude**, **xAI Grok**, **NVIDIA NIM**, or **Custom / Local** credentials to `.env`.
+2. Choose your **Provider** and **Model** from the top bar dropdowns (or type any custom model ID).
+3. Enter your **Target** (`IP`, `domain`, or `URL`) in the left pane.
+4. Pick a **Quick Preset** or type a custom prompt.
+5. Click **`▶ Run with AI`** for automated scanning + AI analysis, or **`⚡ Direct Tool`** for immediate raw tool output.
+6. Inspect **Raw Tool Output** and **AI Analysis** side-by-side in the right pane, and export results via `Save .txt` or `Save .md`.
 
 ### 💻 Terminal CLI Agent
-- **Interactive chat (NVIDIA NIM default):**
+- **Interactive chat (auto-detects configured provider from `.env`):**
   ```bash
   ./run-agent.sh
   ```
@@ -120,9 +142,14 @@ OPENAI_API_KEY="sk-your-openai-api-key"
   ```bash
   ./run-agent.sh -y "Check HTTP headers and open ports on 127.0.0.1"
   ```
-- **Switch to OpenAI provider:**
+- **Select a specific LLM provider:**
   ```bash
   ./run-agent.sh --provider openai --model gpt-4o
+  ./run-agent.sh --provider gemini --model gemini-2.5-flash
+  ./run-agent.sh --provider claude --model claude-sonnet-4-5
+  ./run-agent.sh --provider grok --model grok-3
+  ./run-agent.sh --provider nvidia
+  ./run-agent.sh --provider custom --base-url http://127.0.0.1:11434/v1 --model llama3.2
   ```
 
 <details>
@@ -131,9 +158,9 @@ OPENAI_API_KEY="sk-your-openai-api-key"
 | Flag | Description |
 | :--- | :--- |
 | `prompt` | Optional initial prompt for one-shot execution |
-| `--provider {nvidia,openai}` | Select the AI provider |
+| `--provider {nvidia,openai,gemini,claude,grok,custom}` | Select the AI provider |
 | `--model MODEL` | Override the default model ID |
-| `--api-key API_KEY` | Custom API key |
+| `--api-key API_KEY` | Custom API key (auto-detects provider by prefix if `--provider` is omitted) |
 | `--base-url BASE_URL` | Custom OpenAI-compatible base URL |
 | `--yes`, `-y` | Auto-approve all tool calls without confirmation prompts |
 
@@ -175,7 +202,7 @@ OPENAI_API_KEY="sk-your-openai-api-key"
 ## 🔧 Troubleshooting
 
 - **`kali-server-mcp` Offline:** Run `./kali-mcp-manager.sh restart` and inspect `/tmp/kali-server-mcp.log`.
-- **Missing API Key Error:** Ensure a `.env` file exists in the project root (see `.env.example`) or export `NVIDIA_API_KEY` / `OPENAI_API_KEY`.
+- **Missing API Key Error:** Ensure a `.env` file exists in the project root (see `.env.example`), export the matching provider variable (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, or `NVIDIA_API_KEY`), or configure it via **`🔑 API Keys`** in the Desktop GUI.
 - **Localhost Proxy Interference:** Automatically bypassed in `kali_core.py` (`http_session.trust_env = False`) and via `NO_PROXY=localhost,127.0.0.1` in the launcher scripts.
 - **IDE Import Warnings (`openai` / `PySide6`):** Point your editor's Python interpreter to `/usr/bin/python3` where the system packages are installed.
 

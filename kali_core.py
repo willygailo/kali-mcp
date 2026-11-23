@@ -295,56 +295,285 @@ class AgentCallbacks:
     on_http_session: Optional[Callable[[Optional[requests.Session]], None]] = None
 
 
+PROVIDER_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "nvidia": {
+        "label": "NVIDIA NIM",
+        "env_key": "NVIDIA_API_KEY",
+        "env_aliases": (),
+        "model_env": "NVIDIA_MODEL",
+        "base_url_env": "NVIDIA_BASE_URL",
+        "default_base_url": "https://integrate.api.nvidia.com/v1",
+        "default_model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "models": [
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+            "meta/llama-3.3-70b-instruct",
+            "deepseek-ai/deepseek-r1",
+        ],
+    },
+    "openai": {
+        "label": "ChatGPT (OpenAI)",
+        "env_key": "OPENAI_API_KEY",
+        "env_aliases": (),
+        "model_env": "OPENAI_MODEL",
+        "base_url_env": "OPENAI_BASE_URL",
+        "default_base_url": None,
+        "default_model": "gpt-4o",
+        "models": [
+            "gpt-4o",
+            "gpt-4.1",
+            "o4-mini",
+            "gpt-4o-mini",
+        ],
+    },
+    "gemini": {
+        "label": "Google Gemini",
+        "env_key": "GEMINI_API_KEY",
+        "env_aliases": ("GOOGLE_API_KEY",),
+        "model_env": "GEMINI_MODEL",
+        "base_url_env": "GEMINI_BASE_URL",
+        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "default_model": "gemini-2.5-flash",
+        "models": [
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash",
+        ],
+    },
+    "claude": {
+        "label": "Anthropic Claude",
+        "env_key": "ANTHROPIC_API_KEY",
+        "env_aliases": ("CLAUDE_API_KEY",),
+        "model_env": "ANTHROPIC_MODEL",
+        "base_url_env": "ANTHROPIC_BASE_URL",
+        "default_base_url": "https://api.anthropic.com/v1/",
+        "default_model": "claude-sonnet-4-5",
+        "models": [
+            "claude-sonnet-4-5",
+            "claude-3-7-sonnet-latest",
+            "claude-3-5-haiku-latest",
+        ],
+    },
+    "grok": {
+        "label": "xAI Grok",
+        "env_key": "XAI_API_KEY",
+        "env_aliases": ("GROK_API_KEY",),
+        "model_env": "XAI_MODEL",
+        "base_url_env": "XAI_BASE_URL",
+        "default_base_url": "https://api.x.ai/v1",
+        "default_model": "grok-3",
+        "models": [
+            "grok-3",
+            "grok-3-mini",
+            "grok-2-latest",
+        ],
+    },
+    "custom": {
+        "label": "Custom / Local",
+        "env_key": "CUSTOM_API_KEY",
+        "env_aliases": (),
+        "model_env": "CUSTOM_MODEL",
+        "base_url_env": "CUSTOM_BASE_URL",
+        "default_base_url": None,
+        "default_model": "llama3.2",
+        "models": [
+            "llama3.2",
+            "qwen2.5-coder",
+        ],
+    },
+}
+
+_PROVIDER_PRIORITY = ("nvidia", "openai", "gemini", "claude", "grok", "custom")
+_KEY_PREFIX_PROVIDERS = (
+    ("nvapi-", "nvidia"),
+    ("AIza", "gemini"),
+    ("sk-ant-", "claude"),
+    ("xai-", "grok"),
+    ("sk-", "openai"),
+)
+
+
+def _get_provider_env_key(spec: Dict[str, Any]) -> Optional[str]:
+    """Return the first non-empty API key from env_key or env_aliases."""
+    for env_name in (spec["env_key"], *spec.get("env_aliases", ())):
+        val = os.environ.get(env_name, "").strip()
+        if val:
+            return val
+    return None
+
+
+def _detect_provider(api_key: Optional[str]) -> str:
+    """Detect provider from API key prefix or configured environment keys."""
+    cleaned_key = (api_key or "").strip()
+    if cleaned_key:
+        for prefix, name in _KEY_PREFIX_PROVIDERS:
+            if cleaned_key.startswith(prefix):
+                return name
+
+    for name in _PROVIDER_PRIORITY:
+        if _get_provider_env_key(PROVIDER_REGISTRY[name]):
+            return name
+
+    if os.environ.get("CUSTOM_BASE_URL", "").strip():
+        return "custom"
+
+    return "openai"
+
+
 def resolve_provider_config(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Resolve provider ('nvidia' or 'openai'), model, API key, and base URL."""
-    nvidia_key = os.environ.get("NVIDIA_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
+    """Resolve provider, label, model, model list, API key, base URL, and env_key."""
+    chosen_provider = provider.strip().lower() if provider else _detect_provider(api_key)
+    if chosen_provider not in PROVIDER_REGISTRY:
+        raise ValueError(f"Unsupported LLM provider: {chosen_provider}")
 
-    chosen_provider = provider
-    if not chosen_provider:
-        if api_key and api_key.startswith("nvapi-"):
-            chosen_provider = "nvidia"
-        elif api_key and api_key.startswith("sk-"):
-            chosen_provider = "openai"
-        elif nvidia_key:
-            chosen_provider = "nvidia"
-        else:
-            chosen_provider = "openai"
+    spec = PROVIDER_REGISTRY[chosen_provider]
+    resolved_key = (api_key.strip() if api_key else "") or _get_provider_env_key(spec)
+    env_base_url = os.environ.get(spec["base_url_env"], "").strip() or None
+    env_model = os.environ.get(spec["model_env"], "").strip() or None
+    global_base_url = os.environ.get("LLM_BASE_URL", "").strip() or None
+    global_model = os.environ.get("LLM_MODEL", "").strip() or None
 
-    if chosen_provider == "nvidia":
-        default_base_url = os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-        default_model = os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")
-        resolved_key = api_key or nvidia_key
-        provider_label = "NVIDIA NIM"
-    else:
-        default_base_url = None
-        default_model = "gpt-4o"
-        resolved_key = api_key or openai_key
-        provider_label = "OpenAI"
-
-    resolved_base_url = base_url or os.environ.get("LLM_BASE_URL") or default_base_url
-    resolved_model = model or os.environ.get("LLM_MODEL") or default_model
+    resolved_base_url = (
+        (base_url.strip() if base_url else "")
+        or env_base_url
+        or global_base_url
+        or spec["default_base_url"]
+    )
+    resolved_model = (
+        (model.strip() if model else "")
+        or env_model
+        or global_model
+        or spec["default_model"]
+    )
 
     return {
         "provider": chosen_provider,
-        "provider_label": provider_label,
+        "provider_label": spec["label"],
         "model": resolved_model,
+        "models": list(spec["models"]),
         "api_key": resolved_key,
         "base_url": resolved_base_url,
+        "env_key": spec["env_key"],
     }
 
 
+def save_env_keys(updates: Dict[str, str], env_path: Optional[str] = None) -> str:
+    """Update or insert key=value pairs in .env, chmod 0o600, and sync os.environ."""
+    target_path = env_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    parent_dir = os.path.dirname(os.path.abspath(target_path))
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
+    normalized: Dict[str, str] = {}
+    for raw_key, raw_val in updates.items():
+        key = raw_key.strip()
+        if not key:
+            continue
+        cleaned_val = ("" if raw_val is None else str(raw_val)).replace("\r", "").replace("\n", "").strip()
+        normalized[key] = cleaned_val
+
+    existing_lines: List[str] = []
+    if os.path.isfile(target_path):
+        with open(target_path, encoding="utf-8") as fh:
+            existing_lines = fh.read().splitlines()
+
+    new_lines: List[str] = []
+    handled_keys = set()
+    for raw_line in existing_lines:
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in raw_line:
+            new_lines.append(raw_line)
+            continue
+
+        lhs, _ = raw_line.split("=", 1)
+        line_key = lhs.strip()
+        if line_key not in normalized:
+            new_lines.append(raw_line)
+            continue
+
+        if line_key in handled_keys:
+            continue
+        handled_keys.add(line_key)
+
+        new_val = normalized[line_key]
+        if new_val:
+            escaped = new_val.replace('"', '\\"')
+            new_lines.append(f'{line_key}="{escaped}"')
+
+    for key, val in normalized.items():
+        if key not in handled_keys and val:
+            escaped = val.replace('"', '\\"')
+            new_lines.append(f'{key}="{escaped}"')
+
+    content = "\n".join(new_lines) + ("\n" if new_lines else "")
+    with open(target_path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    os.chmod(target_path, 0o600)
+
+    for key, val in normalized.items():
+        if val:
+            os.environ[key] = val
+        else:
+            os.environ.pop(key, None)
+
+    return target_path
+
+
 def create_openai_client(api_key: Optional[str], base_url: Optional[str] = None) -> OpenAI:
-    """Create an OpenAI-compatible client for OpenAI or NVIDIA NIM."""
+    """Create an OpenAI-compatible client for any configured LLM provider."""
     resolved_key = api_key or "dummy-key"
     if base_url:
         return OpenAI(api_key=resolved_key, base_url=base_url)
     return OpenAI(api_key=resolved_key)
+
+
+def test_provider_connection(
+    provider: str,
+    api_key: Optional[str],
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run a minimal chat completion check against a provider and return {'ok', 'message'}."""
+    try:
+        cfg = resolve_provider_config(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+        )
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc)}
+
+    explicit_empty_key = api_key is not None and not api_key.strip()
+    if cfg["provider"] != "custom" and (explicit_empty_key or not cfg["api_key"]):
+        return {
+            "ok": False,
+            "message": f"Missing API key for {cfg['provider_label']} ({cfg['env_key']}).",
+        }
+    if cfg["provider"] == "custom" and not cfg["base_url"]:
+        return {
+            "ok": False,
+            "message": "Base URL is required for Custom / Local provider.",
+        }
+
+    try:
+        client = create_openai_client(cfg["api_key"], cfg["base_url"])
+        client.chat.completions.create(
+            model=cfg["model"],
+            messages=[{"role": "user", "content": "Reply with OK."}],
+            max_tokens=5,
+            timeout=15,
+        )
+        return {
+            "ok": True,
+            "message": f"Connected to {cfg['provider_label']} ({cfg['model']}).",
+        }
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)}
 
 
 def get_kali_server_health(server_url: Optional[str] = None, timeout: float = 3.0) -> Dict[str, Any]:
