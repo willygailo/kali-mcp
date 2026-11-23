@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/GUI-PySide6%20(Qt6)-41CD52?style=flat-square&logo=qt&logoColor=white" alt="PySide6" />
   <img src="https://img.shields.io/badge/LLM-NVIDIA%20NIM%20%7C%20OpenAI-76B900?style=flat-square" alt="LLM Providers" />
-  <a href="https://github.com/willygailo/kali-mcp/graphs/contributors?from=2026-08-21T16%3A00%3A00.000Z">
+  <a href="https://github.com/willygailo/kali-mcp/graphs/contributors">
     <img src="https://img.shields.io/github/contributors/willygailo/kali-mcp?style=flat-square&color=58a6ff" alt="Contributors" />
   </a>
   <a href="https://github.com/willygailo/kali-mcp/commits/main">
@@ -170,7 +170,7 @@ OPENAI_API_KEY="sk-your-openai-api-key"
 
 ## 👥 Contributors
 
-Thanks to everyone who has contributed to this project! View the live contribution graph on [GitHub Contributors](https://github.com/willygailo/kali-mcp/graphs/contributors?from=2026-08-21T16%3A00%3A00.000Z).
+Thanks to everyone who has contributed to this project! View the live contribution graph on [GitHub Contributors](https://github.com/willygailo/kali-mcp/graphs/contributors).
 
 <table>
   <tr>
@@ -184,7 +184,7 @@ Thanks to everyone who has contributed to this project! View the live contributi
   </tr>
 </table>
 
-<a href="https://github.com/willygailo/kali-mcp/graphs/contributors?from=2026-08-21T16%3A00%3A00.000Z">
+<a href="https://github.com/willygailo/kali-mcp/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=willygailo/kali-mcp" alt="Contributors Graph" />
 </a>
 
