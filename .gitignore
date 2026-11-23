@@ -18,10 +18,17 @@ env/
 .env.*
 !.env.example
 
-# Logs & local scan exports
+# Logs, local databases & scan exports
 *.log
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 scan-output*.txt
 analysis*.md
+kali-report*.html
+kali-report*.md
 
 # IDE / OS files
 .vscode/
