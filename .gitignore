@@ -26,5 +26,6 @@ analysis*.md
 # IDE / OS files
 .vscode/
 .idea/
+pyrefly.toml
 .DS_Store
 Thumbs.db
