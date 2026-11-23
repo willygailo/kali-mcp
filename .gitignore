@@ -18,6 +18,11 @@ env/
 .env.*
 !.env.example
 
+# PyArmor build & local editable source (never push readable source)
+src_private/
+.pyarmor/
+dist/
+
 # Logs, local databases & scan exports
 *.log
 *.db

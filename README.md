@@ -56,12 +56,15 @@
 
 | File | Description |
 | :--- | :--- |
-| `kali-gui.py` | PySide6 Desktop GUI (`KaliGuiWindow`) with streaming AI, playbooks, findings table, and notes |
+| `kali-gui.py` | PySide6 Desktop GUI (`KaliGuiWindow`) entrypoint with streaming AI, playbooks, findings table, and notes |
+| `kali_gui_*.py` | Modular Desktop GUI components (theme, workers, API keys dialog, UI layout, actions) |
 | `kali-agent.py` | Interactive and one-shot CLI AI assistant with streaming output and `rich` formatting |
 | `kali_core.py` | Shared core: `.env` loader, provider config, all 11 `TOOL_DEFINITIONS`, `PLAYBOOKS`, `call_kali_api`, and streaming agent loop |
 | `kali_parsers.py` | Structured output parsers (`nmap`, `gobuster`, `dirb`, `nikto`, `sqlmap`, `tls/dns`, `searchsploit`) |
 | `kali_store.py` | SQLite persistence for engagements, scans, findings, notes, and chat contexts |
 | `kali_reports.py` | Standalone HTML and Markdown engagement/CTF writeup report generator |
+| `pyarmor_runtime_000000/` | PyArmor runtime library required by the obfuscated Python modules |
+| `build-obfuscated.sh` | Maintainer build script to regenerate protected root `.py` modules from local `src_private/` |
 | `run-gui.sh` | One-command launcher that starts `kali-server-mcp` and opens the Desktop GUI |
 | `run-agent.sh` | One-command launcher that starts `kali-server-mcp` and opens the Terminal Agent |
 | `kali-mcp-manager.sh` | Control script for `/usr/bin/kali-server-mcp` (`start`, `stop`, `restart`, `status`) |
@@ -195,6 +198,18 @@ NVIDIA_API_KEY="nvapi-your-nvidia-api-key"
 ./kali-mcp-manager.sh start    # Start the background server
 ./kali-mcp-manager.sh restart  # Restart the server
 ./kali-mcp-manager.sh stop     # Stop the server
+```
+
+---
+
+## 🔒 Code Protection (PyArmor)
+
+Distributed `.py` modules in the repository root are protected with **PyArmor 9.3.0** targeting **Linux x86_64 / Python 3.14** and require the bundled `pyarmor_runtime_000000/` directory at runtime.
+
+Maintainers keep editable source modules in the local, gitignored `src_private/` directory and regenerate the protected root `.py` files with:
+
+```bash
+./build-obfuscated.sh
 ```
 
 ---
