@@ -2,10 +2,26 @@
 
 > **AI-powered Offensive Security & Recon Assistant** para sa **Kali Linux** (`kali-server-mcp`) — may sariling **PySide6 Desktop GUI** (side-by-side layout) at **Interactive Terminal Agent** na gumagana sa **NVIDIA NIM** (Nemotron) at **OpenAI**.
 
-![Kali Linux](https://img.shields.io/badge/Kali-Linux-557C94?style=flat-square&logo=kalilinux&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
-![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt6)-41CD52?style=flat-square&logo=qt&logoColor=white)
-![Providers](https://img.shields.io/badge/LLM-NVIDIA%20NIM%20%7C%20OpenAI-76B900?style=flat-square)
+<p align="left">
+  <img src="https://img.shields.io/badge/Kali-Linux-557C94?style=flat-square&logo=kalilinux&logoColor=white" alt="Kali Linux" />
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/GUI-PySide6%20(Qt6)-41CD52?style=flat-square&logo=qt&logoColor=white" alt="PySide6" />
+  <img src="https://img.shields.io/badge/LLM-NVIDIA%20NIM%20%7C%20OpenAI-76B900?style=flat-square" alt="LLM Providers" />
+  <a href="https://github.com/willygailo/kali-mcp/graphs/contributors?from=2026-08-21T16%3A00%3A00.000Z">
+    <img src="https://img.shields.io/github/contributors/willygailo/kali-mcp?style=flat-square&color=58a6ff" alt="Contributors" />
+  </a>
+  <a href="https://github.com/willygailo/kali-mcp/commits/main">
+    <img src="https://img.shields.io/github/last-commit/willygailo/kali-mcp?style=flat-square&color=3fb950" alt="Last Commit" />
+  </a>
+</p>
+
+---
+
+## 🖼️ Desktop GUI Preview
+
+<p align="center">
+  <img src="assets/gui-preview.png" alt="Kali MCP AI Workbench Desktop GUI" width="100%" />
+</p>
 
 ---
 
@@ -21,25 +37,6 @@
 
 ---
 
-## 🖥️ GUI Layout Overview
-
-```text
-+---------------------------------------------------------------------------------+
-| KALI MCP AI WORKBENCH   ● Running (127.0.0.1:5000) [Start][Restart][Stop]  LLM  |
-+----------------------------------+----------------------------------------------+
-|  TARGET & CONTROLS (Left)        |  RAW TOOL OUTPUT (Top-Right)                 |
-|                                  |  [Analyze Output with AI] [Copy] [Save .txt] |
-|  Target: [ example.com        ]  |  PORT    STATE  SERVICE  VERSION             |
-|  Presets: [Nmap] [Recon] [Nikto] |  443/tcp open   https    cloudflare          |
-|           [Gobuster][SQL][TLS]   +----------------------------------------------+
-|  Prompt:  [ ...               ]  |  AI ANALYSIS & FINDINGS (Bottom-Right)       |
-|  [▶ Run with AI] [⚡ Direct Tool] |  • Summary ng open ports, TLS posture, at    |
-|  Recent Scans / History          |    mga susunod na recommended checks         |
-+----------------------------------+----------------------------------------------+
-```
-
----
-
 ## 📁 Istruktura ng Proyekto
 
 | File | Deskripsyon |
@@ -51,6 +48,7 @@
 | `run-agent.sh` | One-command launcher para i-start ang `kali-server-mcp` at buksan ang Terminal Agent |
 | `kali-mcp-manager.sh` | Control script para sa `/usr/bin/kali-server-mcp` (`start`, `stop`, `restart`, `status`) |
 | `.env.example` | Template para sa API keys (`NVIDIA_API_KEY`, `OPENAI_API_KEY`) |
+| `CONTRIBUTING.md` | Gabay at verification steps para sa mga magko-contribute |
 
 ---
 
@@ -150,6 +148,47 @@ Tumatakbo ang `kali-server-mcp` sa `http://127.0.0.1:5000` (logs sa `/tmp/kali-s
 ./kali-mcp-manager.sh restart  # I-restart ang server
 ./kali-mcp-manager.sh stop     # I-stop ang server
 ```
+
+---
+
+## 🔧 Troubleshooting
+
+- **`kali-server-mcp` Offline:** Patakbuhin ang `./kali-mcp-manager.sh restart` at i-check ang `/tmp/kali-server-mcp.log`.
+- **Missing API Key Error:** Siguraduhing may `.env` file sa root folder (tingnan ang `.env.example`) o naka-export ang `NVIDIA_API_KEY` / `OPENAI_API_KEY`.
+- **Localhost Proxy Interference:** Awtomatikong naka-bypass sa `kali_core.py` (`http_session.trust_env = False`) at `NO_PROXY=localhost,127.0.0.1` sa launcher scripts.
+- **IDE Import Warnings (`openai` / `PySide6`):** Ituro ang Python interpreter ng editor sa `/usr/bin/python3` kung saan naka-install ang system packages.
+
+---
+
+## 🗺️ Roadmap
+
+- [ ] Custom wordlist picker at saved scan profiles sa GUI
+- [ ] Export ng buong session report (Raw + AI Analysis) bilang single HTML/Markdown bundle
+- [ ] Streaming token output habang nagre-reply ang AI
+
+---
+
+## 👥 Contributors
+
+Salamat sa lahat ng tumulong at nag-ambag sa proyektong ito! Tingnan ang live contributions graph sa [GitHub Contributors](https://github.com/willygailo/kali-mcp/graphs/contributors?from=2026-08-21T16%3A00%3A00.000Z).
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/willygailo">
+        <img src="https://github.com/willygailo.png?size=100" width="100px;" alt="willygailo"/><br />
+        <sub><b>willygailo</b></sub>
+      </a><br />
+      <sub>Creator &amp; Maintainer</sub>
+    </td>
+  </tr>
+</table>
+
+<a href="https://github.com/willygailo/kali-mcp/graphs/contributors?from=2026-08-21T16%3A00%3A00.000Z">
+  <img src="https://contrib.rocks/image?repo=willygailo/kali-mcp" alt="Contributors Graph" />
+</a>
+
+> Gusto mong mag-contribute? Basahin ang [CONTRIBUTING.md](CONTRIBUTING.md) at magbukas ng Pull Request!
 
 ---
 
