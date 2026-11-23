@@ -58,6 +58,7 @@ def print_md(markdown_text: str):
 
 def run_chat_turn(client, model: str, messages: List[Dict[str, Any]], auto_approve: bool = False):
     """Execute a model completion turn using terminal output and prompts."""
+    streamed_any = False
 
     def on_reasoning(reasoning: str):
         if console is not None and Panel is not None:
@@ -65,10 +66,25 @@ def run_chat_turn(client, model: str, messages: List[Dict[str, Any]], auto_appro
         else:
             print(f"[Thinking] {reasoning[:300]}...")
 
+    def on_assistant_delta(piece: str):
+        nonlocal streamed_any
+        streamed_any = True
+        sys.stdout.write(piece)
+        sys.stdout.flush()
+
     def on_assistant_message(content: str):
-        print_md(content)
+        nonlocal streamed_any
+        if streamed_any:
+            print()
+            streamed_any = False
+        else:
+            print_md(content)
 
     def on_tool_planned(fn_name: str, _fn_args: Dict[str, Any], cmd_preview: str):
+        nonlocal streamed_any
+        if streamed_any:
+            print()
+            streamed_any = False
         if console is not None and Panel is not None:
             console.print(
                 Panel(
@@ -123,6 +139,7 @@ def run_chat_turn(client, model: str, messages: List[Dict[str, Any]], auto_appro
 
     callbacks = AgentCallbacks(
         on_reasoning=on_reasoning,
+        on_assistant_delta=on_assistant_delta,
         on_assistant_message=on_assistant_message,
         on_tool_planned=on_tool_planned,
         on_confirm=on_confirm,

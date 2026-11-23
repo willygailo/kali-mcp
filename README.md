@@ -1,8 +1,20 @@
-# 🐉 Kali MCP AI Workbench
+<p align="center">
+  <img src="assets/banner.png" alt="Kali MCP AI Workbench Banner" width="100%" />
+</p>
+
+<h1 align="center">🐉 Kali MCP AI Workbench</h1>
+
+<p align="center">
+  <strong>🎯 Target &amp; Presets</strong> &nbsp;•&nbsp;
+  <strong>⚡ Direct &amp; AI Scans</strong> &nbsp;•&nbsp;
+  <strong>🤖 NVIDIA NIM &amp; OpenAI</strong> &nbsp;•&nbsp;
+  <strong>📊 Side-by-Side Output</strong> &nbsp;•&nbsp;
+  <strong>🛡️ Safe Tool Approval</strong>
+</p>
 
 > **AI-powered Offensive Security & Recon Assistant** for **Kali Linux** (`kali-server-mcp`) — featuring a dedicated **PySide6 Desktop GUI** (side-by-side layout) and an **Interactive Terminal Agent** powered by **NVIDIA NIM** (Nemotron) and **OpenAI**.
 
-<p align="left">
+<p align="center">
   <img src="https://img.shields.io/badge/Kali-Linux-557C94?style=flat-square&logo=kalilinux&logoColor=white" alt="Kali Linux" />
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/GUI-PySide6%20(Qt6)-41CD52?style=flat-square&logo=qt&logoColor=white" alt="PySide6" />
@@ -28,11 +40,12 @@
 ## ✨ Features
 
 - **Side-by-Side Desktop GUI (`kali-gui.py`):**
-  - **Left Pane (Controls):** Target input (`IP / Domain / URL`), 6 one-click scan presets (`Nmap (-sCV)`, `Full Recon`, `Nikto Web`, `Gobuster Dir`, `SQLmap`, `TLS / DNS Info`), custom AI prompt, Direct Tool runner, and clickable scan history.
-  - **Right Pane (Instant Results):** View **Raw Tool Output / Terminal Log** (top) and **AI Analysis & Findings** (bottom) at the same time — complete with `Analyze Output with AI`, `Copy`, and `Save .txt` / `Save .md`.
-  - **Safe Execution:** Toggleable **Auto-approve** mode or an inline **Approve / Decline** banner before running any tool.
-- **Interactive Terminal Agent (`kali-agent.py`):** Uses `rich` markdown and panel formatting for headless or SSH workflows.
-- **Dual Mode (AI + Direct):** Let the AI orchestrate and summarize (`▶ Run with AI`) or execute Kali tools directly against `kali-server-mcp` (`⚡ Direct Tool`) without an LLM roundtrip.
+  - **Project / Engagement Workspaces:** Switch between lab/CTF targets with persistent SQLite storage (`kali_store.py`) for scan history, findings, notes, and AI chat context.
+  - **Left Pane (Controls):** Target input (`IP / Domain / URL`), 6 one-click presets, **Multi-Step Playbooks** (`Web Recon Pipeline`, `Network Audit Pipeline`), collapsible **Advanced Tool Options** (Ports, Extra Flags, Wordlist picker), Direct Tool runner, and live elapsed timer.
+  - **Right Pane (Instant Results):** View **Raw Tool Output / Terminal Log** (top) and **Streaming AI Analysis & Findings** (bottom) side-by-side, plus a **Findings & Ports** table with severity filtering & follow-up triggers, and **Lab/CTF Notes + HTML/Markdown Report Export**.
+  - **Safe Execution:** Toggleable **Auto-approve** mode or an inline **Approve / Decline** banner before running any tool, plus instant HTTP session cancellation on Stop.
+- **Interactive Terminal Agent (`kali-agent.py`):** Streaming token output and `rich` markdown/panel formatting for headless or SSH workflows.
+- **Dual Mode (AI + Direct):** Let the AI orchestrate and summarize (`▶ Run with AI`) or execute all 11 Kali MCP tools directly (`⚡ Direct Tool`) without an LLM roundtrip.
 - **Automatic `.env` Loading:** API keys stay safely out of version control in `.env` (gitignored) and are loaded automatically by the launchers and `kali_core.py`.
 
 ---
@@ -41,9 +54,12 @@
 
 | File | Description |
 | :--- | :--- |
-| `kali-gui.py` | PySide6 Desktop GUI (`KaliGuiWindow`) with background worker threads and live server status |
-| `kali-agent.py` | Interactive and one-shot CLI AI assistant powered by `rich` |
-| `kali_core.py` | Shared core: `.env` loader, provider config, `TOOL_DEFINITIONS`, `call_kali_api`, and agent loop |
+| `kali-gui.py` | PySide6 Desktop GUI (`KaliGuiWindow`) with streaming AI, playbooks, findings table, and notes |
+| `kali-agent.py` | Interactive and one-shot CLI AI assistant with streaming output and `rich` formatting |
+| `kali_core.py` | Shared core: `.env` loader, provider config, all 11 `TOOL_DEFINITIONS`, `PLAYBOOKS`, `call_kali_api`, and streaming agent loop |
+| `kali_parsers.py` | Structured output parsers (`nmap`, `gobuster`, `dirb`, `nikto`, `sqlmap`, `tls/dns`, `searchsploit`) |
+| `kali_store.py` | SQLite persistence for engagements, scans, findings, notes, and chat contexts |
+| `kali_reports.py` | Standalone HTML and Markdown engagement/CTF writeup report generator |
 | `run-gui.sh` | One-command launcher that starts `kali-server-mcp` and opens the Desktop GUI |
 | `run-agent.sh` | One-command launcher that starts `kali-server-mcp` and opens the Terminal Agent |
 | `kali-mcp-manager.sh` | Control script for `/usr/bin/kali-server-mcp` (`start`, `stop`, `restart`, `status`) |
@@ -129,12 +145,17 @@ OPENAI_API_KEY="sk-your-openai-api-key"
 
 | Tool | Endpoint | Purpose |
 | :--- | :--- | :--- |
-| `execute_command` | `/api/command` | Arbitrary Kali shell commands (`openssl`, `dig`, `curl`, etc.) |
+| `execute_command` | `/api/command` | Arbitrary Kali shell commands (`searchsploit`, `openssl`, `dig`, `curl`, etc.) |
 | `nmap_scan` | `/api/tools/nmap` | Network port & service discovery |
 | `gobuster_scan` | `/api/tools/gobuster` | Directory, DNS, fuzz, and vhost enumeration |
+| `dirb_scan` | `/api/tools/dirb` | Web content directory scanning |
 | `nikto_scan` | `/api/tools/nikto` | Web server vulnerability scanning |
 | `sqlmap_scan` | `/api/tools/sqlmap` | Automated SQL injection testing |
+| `wpscan_analyze` | `/api/tools/wpscan` | WordPress vulnerability enumeration |
+| `enum4linux_scan` | `/api/tools/enum4linux` | Windows/Samba SMB enumeration |
+| `hydra_attack` | `/api/tools/hydra` | Network login brute-forcing |
 | `john_crack` | `/api/tools/john` | Password hash cracking (John the Ripper) |
+| `metasploit_run` | `/api/tools/metasploit` | Metasploit module execution |
 
 ---
 
@@ -162,9 +183,11 @@ OPENAI_API_KEY="sk-your-openai-api-key"
 
 ## 🗺️ Roadmap
 
-- [ ] Custom wordlist picker and saved scan profiles in the GUI
-- [ ] Single HTML/Markdown session report export (Raw Output + AI Analysis)
-- [ ] Streaming token output for real-time AI responses
+- [x] Custom wordlist picker and advanced flags panel in the GUI
+- [x] Single HTML/Markdown session report export (Raw Output + AI Analysis + Findings)
+- [x] Streaming token output for real-time AI responses
+- [x] Persistent SQLite lab/CTF workspaces and structured Findings table
+- [ ] Live chunked stdout streaming for long-running scans on `kali-server-mcp`
 
 ---
 

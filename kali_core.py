@@ -2,8 +2,9 @@
 """
 Kali MCP Shared Core
 --------------------
-Shared LLM provider configuration, Kali MCP API client helpers, tool definitions,
-and callback-driven agent loop used by both kali-agent.py (CLI) and kali-gui.py (GUI).
+Shared LLM provider configuration, Kali MCP API client helpers, full tool definitions,
+automated recon playbooks, and streaming callback-driven agent loop used by both
+kali-agent.py (CLI) and kali-gui.py (GUI).
 """
 
 import json
@@ -43,30 +44,30 @@ DEFAULT_KALI_SERVER_URL = os.environ.get("KALI_SERVER_URL", "http://127.0.0.1:50
 http_session = requests.Session()
 http_session.trust_env = False
 
-SYSTEM_PROMPT = """You are an offensive security AI assistant running directly in a Kali Linux environment.
+SYSTEM_PROMPT = """You are an offensive security AI assistant running directly in a Kali Linux lab/CTF environment.
 You have direct access to execute Kali tools and terminal commands through the Kali MCP server.
 
 Available tools include:
-- execute_command: Execute any terminal command (bash, bash utilities, scripts).
+- execute_command: Execute any terminal command (bash utilities, searchsploit, curl, openssl, dig, scripts).
 - nmap_scan: Run network port and service scanning.
 - gobuster_scan: Brute force directories, files, DNS subdomains, or vhosts.
 - dirb_scan: Web content scanner.
 - nikto_scan: Web server vulnerability scanner.
 - sqlmap_scan: Automated SQL injection scanner.
 - metasploit_run: Run Metasploit modules.
-- hydra_attack: Password brute-forcing.
-- john_crack: Hash cracking.
+- hydra_attack: Password brute-forcing against network services.
+- john_crack: Hash cracking with John the Ripper.
 - wpscan_analyze: WordPress vulnerability scanner.
 - enum4linux_scan: Windows/Samba enumeration.
 
 Guidelines:
-1. Always analyze target results and provide clear, actionable summaries.
-2. When executing tools, suggest appropriate flags (e.g. -T4, -sC, -sV for nmap).
+1. Always analyze target results and provide clear, actionable summaries with severity and next steps.
+2. When executing tools, choose appropriate flags (e.g. -T4, -sCV for nmap).
 3. If an error occurs, analyze stdout/stderr and suggest alternatives or fixes.
-4. Always operate within legal and authorized boundaries (ethical hacking / authorized pentesting / CTFs).
+4. Assume all engagements are authorized labs or CTF targets; be concise, technical, and thorough.
 """
 
-TOOL_DEFINITIONS = [
+TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
@@ -77,7 +78,7 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "The exact shell command to run (e.g., 'uname -a', 'which nmap', 'curl -I http://example.com')",
+                        "description": "The exact shell command to run (e.g., 'searchsploit --json nginx', 'curl -I http://target')",
                     }
                 },
                 "required": ["command"],
@@ -105,7 +106,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "gobuster_scan",
-            "description": "Execute Gobuster directory/file or DNS enumeration.",
+            "description": "Execute Gobuster directory/file, DNS, fuzz, or vhost enumeration.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -113,6 +114,22 @@ TOOL_DEFINITIONS = [
                     "mode": {"type": "string", "enum": ["dir", "dns", "fuzz", "vhost"], "default": "dir"},
                     "wordlist": {"type": "string", "description": "Wordlist path", "default": "/usr/share/wordlists/dirb/common.txt"},
                     "additional_args": {"type": "string", "description": "Additional flags", "default": ""},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dirb_scan",
+            "description": "Execute Dirb web content scanner against a target URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Target URL"},
+                    "wordlist": {"type": "string", "description": "Wordlist path", "default": "/usr/share/wordlists/dirb/common.txt"},
+                    "additional_args": {"type": "string", "description": "Additional Dirb flags", "default": ""},
                 },
                 "required": ["url"],
             },
@@ -143,9 +160,59 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "url": {"type": "string", "description": "Target URL"},
                     "data": {"type": "string", "description": "POST data string", "default": ""},
-                    "additional_args": {"type": "string", "description": "Additional SQLmap arguments (e.g., '--batch --dbs')", "default": "--batch"},
+                    "additional_args": {"type": "string", "description": "Additional SQLmap arguments (e.g., '--dbs --level=2')", "default": ""},
                 },
                 "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "wpscan_analyze",
+            "description": "Execute WPScan WordPress vulnerability scanner against a target URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Target WordPress URL"},
+                    "additional_args": {"type": "string", "description": "Additional WPScan arguments (e.g., '--enumerate vp,u')", "default": "--enumerate vp,u"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "enum4linux_scan",
+            "description": "Execute Enum4linux Windows/Samba SMB enumeration against a target IP or host.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Target IP or hostname"},
+                    "additional_args": {"type": "string", "description": "Additional enum4linux arguments", "default": "-a"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hydra_attack",
+            "description": "Execute Hydra network login brute-forcing against a target service.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Target IP or hostname"},
+                    "service": {"type": "string", "description": "Service name (e.g., 'ssh', 'ftp', 'http-post-form')"},
+                    "username": {"type": "string", "description": "Single username", "default": ""},
+                    "username_file": {"type": "string", "description": "Path to username list", "default": ""},
+                    "password": {"type": "string", "description": "Single password", "default": ""},
+                    "password_file": {"type": "string", "description": "Path to password wordlist", "default": ""},
+                    "additional_args": {"type": "string", "description": "Additional Hydra arguments", "default": ""},
+                },
+                "required": ["target", "service"],
             },
         },
     },
@@ -166,7 +233,50 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "metasploit_run",
+            "description": "Execute a Metasploit module with specified module options.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "module": {"type": "string", "description": "Metasploit module path (e.g., 'auxiliary/scanner/http/http_version')"},
+                    "options": {
+                        "type": "object",
+                        "description": "Module options dictionary (e.g., {'RHOSTS': '10.10.10.1', 'RPORT': 80})",
+                        "default": {},
+                    },
+                },
+                "required": ["module"],
+            },
+        },
+    },
 ]
+
+
+# Built-in multi-step recon playbooks for the GUI
+PLAYBOOKS: Dict[str, Dict[str, Any]] = {
+    "web_recon": {
+        "name": "Web Recon Pipeline",
+        "description": "Nmap Web Ports -> TLS & Headers -> Gobuster Dir -> Nikto -> AI Triage",
+        "steps": [
+            {"label": "Nmap Web Ports", "tool": "nmap_scan", "args": {"scan_type": "-sCV", "ports": "80,443,8080,8443", "additional_args": "-T4"}},
+            {"label": "TLS & HTTP Headers", "tool": "tls_http_check", "args": {}},
+            {"label": "Gobuster Directory Enum", "tool": "gobuster_scan", "args": {"mode": "dir"}},
+            {"label": "Nikto Web Scan", "tool": "nikto_scan", "args": {}},
+        ],
+    },
+    "network_audit": {
+        "name": "Network Audit Pipeline",
+        "description": "Top Ports Fast Scan -> Service/Version Scripts -> Searchsploit Match -> AI Triage",
+        "steps": [
+            {"label": "Fast Port Discovery", "tool": "nmap_scan", "args": {"scan_type": "-sS", "additional_args": "-T4 --top-ports 1000"}},
+            {"label": "Service & Script Scan", "tool": "nmap_scan", "args": {"scan_type": "-sCV", "additional_args": "-T4"}},
+            {"label": "SMB / Enum4linux (if applicable)", "tool": "enum4linux_scan", "args": {"additional_args": "-a"}},
+        ],
+    },
+}
 
 
 @dataclass
@@ -174,6 +284,7 @@ class AgentCallbacks:
     """Optional hooks emitted during an AI agent chat turn."""
 
     on_reasoning: Optional[Callable[[str], None]] = None
+    on_assistant_delta: Optional[Callable[[str], None]] = None
     on_assistant_message: Optional[Callable[[str], None]] = None
     on_tool_planned: Optional[Callable[[str, Dict[str, Any], str], None]] = None
     on_confirm: Optional[Callable[[str, Dict[str, Any], str], bool]] = None
@@ -181,6 +292,7 @@ class AgentCallbacks:
     on_tool_result: Optional[Callable[[str, Dict[str, Any]], None]] = None
     on_error: Optional[Callable[[str, str], None]] = None
     should_stop: Optional[Callable[[], bool]] = None
+    on_http_session: Optional[Callable[[Optional[requests.Session]], None]] = None
 
 
 def resolve_provider_config(
@@ -258,10 +370,11 @@ def call_kali_api(
     arguments: Dict[str, Any],
     server_url: Optional[str] = None,
     timeout: int = 300,
+    on_session: Optional[Callable[[Optional[requests.Session]], None]] = None,
 ) -> Dict[str, Any]:
     """Execute a tool against the Kali MCP HTTP API server."""
     base = (server_url or DEFAULT_KALI_SERVER_URL).rstrip("/")
-    endpoint_map = {
+    endpoint_map: Dict[str, Any] = {
         "execute_command": ("api/command", lambda args: {"command": args.get("command", "")}),
         "nmap_scan": (
             "api/tools/nmap",
@@ -281,6 +394,14 @@ def call_kali_api(
                 "additional_args": args.get("additional_args", ""),
             },
         ),
+        "dirb_scan": (
+            "api/tools/dirb",
+            lambda args: {
+                "url": args.get("url"),
+                "wordlist": args.get("wordlist", "/usr/share/wordlists/dirb/common.txt"),
+                "additional_args": args.get("additional_args", ""),
+            },
+        ),
         "nikto_scan": (
             "api/tools/nikto",
             lambda args: {
@@ -293,7 +414,33 @@ def call_kali_api(
             lambda args: {
                 "url": args.get("url"),
                 "data": args.get("data", ""),
-                "additional_args": args.get("additional_args", "--batch"),
+                "additional_args": args.get("additional_args", ""),
+            },
+        ),
+        "wpscan_analyze": (
+            "api/tools/wpscan",
+            lambda args: {
+                "url": args.get("url"),
+                "additional_args": args.get("additional_args", "--enumerate vp,u"),
+            },
+        ),
+        "enum4linux_scan": (
+            "api/tools/enum4linux",
+            lambda args: {
+                "target": args.get("target"),
+                "additional_args": args.get("additional_args", "-a"),
+            },
+        ),
+        "hydra_attack": (
+            "api/tools/hydra",
+            lambda args: {
+                "target": args.get("target"),
+                "service": args.get("service"),
+                "username": args.get("username", ""),
+                "username_file": args.get("username_file", ""),
+                "password": args.get("password", ""),
+                "password_file": args.get("password_file", ""),
+                "additional_args": args.get("additional_args", ""),
             },
         ),
         "john_crack": (
@@ -305,6 +452,13 @@ def call_kali_api(
                 "additional_args": args.get("additional_args", ""),
             },
         ),
+        "metasploit_run": (
+            "api/tools/metasploit",
+            lambda args: {
+                "module": args.get("module", ""),
+                "options": args.get("options", {}),
+            },
+        ),
     }
 
     if tool_name not in endpoint_map:
@@ -313,12 +467,94 @@ def call_kali_api(
     endpoint, payload_builder = endpoint_map[tool_name]
     payload = payload_builder(arguments)
 
+    session = requests.Session()
+    session.trust_env = False
+    if on_session:
+        on_session(session)
+
     try:
         url = f"{base}/{endpoint}"
-        response = http_session.post(url, json=payload, timeout=timeout)
+        response = session.post(url, json=payload, timeout=timeout)
         return response.json()
     except Exception as exc:
         return {"error": str(exc), "success": False}
+    finally:
+        if on_session:
+            on_session(None)
+        session.close()
+
+
+def _stream_completion(
+    client: OpenAI,
+    model: str,
+    messages: List[Dict[str, Any]],
+    cb: AgentCallbacks,
+) -> Optional[Dict[str, Any]]:
+    """Run a streaming chat completion and reconstruct the assistant message dict."""
+    stream = client.chat.completions.create(
+        model=model,
+        messages=cast(Any, messages),
+        tools=cast(Any, TOOL_DEFINITIONS),
+        tool_choice="auto",
+        max_tokens=4096,
+        stream=True,
+    )
+
+    content_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    tool_calls_map: Dict[int, Dict[str, Any]] = {}
+
+    for chunk in stream:
+        if cb.should_stop and cb.should_stop():
+            return None
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+
+        r_piece = getattr(delta, "reasoning_content", None)
+        if r_piece:
+            reasoning_parts.append(r_piece)
+
+        c_piece = getattr(delta, "content", None)
+        if c_piece:
+            content_parts.append(c_piece)
+            if cb.on_assistant_delta:
+                cb.on_assistant_delta(c_piece)
+
+        tc_deltas = getattr(delta, "tool_calls", None)
+        if tc_deltas:
+            for tc in tc_deltas:
+                idx = tc.index if tc.index is not None else 0
+                entry = tool_calls_map.setdefault(
+                    idx,
+                    {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                if tc.id:
+                    entry["id"] = tc.id
+                if tc.type:
+                    entry["type"] = tc.type
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    if fn.name:
+                        entry["function"]["name"] += fn.name
+                    if fn.arguments:
+                        entry["function"]["arguments"] += fn.arguments
+
+    reasoning_text = "".join(reasoning_parts).strip()
+    if reasoning_text and cb.on_reasoning:
+        cb.on_reasoning(reasoning_text)
+
+    content_text = "".join(content_parts)
+    tool_calls_list = [tool_calls_map[k] for k in sorted(tool_calls_map.keys())]
+
+    assistant_msg: Dict[str, Any] = {"role": "assistant"}
+    if content_text:
+        assistant_msg["content"] = content_text
+    else:
+        assistant_msg["content"] = None if tool_calls_list else ""
+    if tool_calls_list:
+        assistant_msg["tool_calls"] = tool_calls_list
+    return assistant_msg
 
 
 def run_chat_turn(
@@ -328,22 +564,36 @@ def run_chat_turn(
     auto_approve: bool = False,
     callbacks: Optional[AgentCallbacks] = None,
     server_url: Optional[str] = None,
+    stream: bool = True,
 ) -> None:
-    """Execute a model completion turn and handle any tool calls via callbacks."""
+    """Execute a model completion turn (streaming by default) and handle tool calls."""
     cb = callbacks or AgentCallbacks()
 
     while True:
         if cb.should_stop and cb.should_stop():
             return
 
+        assistant_msg: Optional[Dict[str, Any]] = None
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=cast(Any, messages),
-                tools=cast(Any, TOOL_DEFINITIONS),
-                tool_choice="auto",
-                max_tokens=4096,
-            )
+            if stream:
+                assistant_msg = _stream_completion(client, model, messages, cb)
+                if assistant_msg is None:
+                    return
+            else:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=cast(Any, messages),
+                    tools=cast(Any, TOOL_DEFINITIONS),
+                    tool_choice="auto",
+                    max_tokens=4096,
+                )
+                msg = response.choices[0].message
+                reasoning = getattr(msg, "reasoning_content", None)
+                if reasoning and cb.on_reasoning:
+                    cb.on_reasoning(reasoning)
+                assistant_msg = dict(msg.model_dump(exclude_none=True))
+                if not assistant_msg.get("tool_calls") and assistant_msg.get("content") and cb.on_assistant_delta:
+                    cb.on_assistant_delta(assistant_msg["content"])
         except Exception as exc:
             err_str = str(exc)
             if "insufficient_quota" in err_str or "credit_balance_exhausted" in err_str:
@@ -360,30 +610,29 @@ def run_chat_turn(
         if cb.should_stop and cb.should_stop():
             return
 
-        msg = response.choices[0].message
+        messages.append(assistant_msg)
+        tool_calls = assistant_msg.get("tool_calls") or []
 
-        reasoning = getattr(msg, "reasoning_content", None)
-        if reasoning and cb.on_reasoning:
-            cb.on_reasoning(reasoning)
-
-        messages.append(msg.model_dump(exclude_none=True))
-
-        if not msg.tool_calls:
-            if msg.content and cb.on_assistant_message:
-                cb.on_assistant_message(msg.content)
+        if not tool_calls:
+            content = assistant_msg.get("content") or ""
+            if content and cb.on_assistant_message:
+                cb.on_assistant_message(content)
             break
 
-        for tool_call in msg.tool_calls:
+        for tool_call in tool_calls:
             if cb.should_stop and cb.should_stop():
                 return
 
-            fn_obj = getattr(tool_call, "function", None)
-            if fn_obj is None:
+            fn_obj = tool_call.get("function") if isinstance(tool_call, dict) else getattr(tool_call, "function", None)
+            if not fn_obj:
                 continue
 
-            fn_name = fn_obj.name
+            fn_name = fn_obj.get("name", "") if isinstance(fn_obj, dict) else fn_obj.name
+            raw_args = fn_obj.get("arguments", "{}") if isinstance(fn_obj, dict) else fn_obj.arguments
+            tc_id = tool_call.get("id", "") if isinstance(tool_call, dict) else tool_call.id
+
             try:
-                fn_args = json.loads(fn_obj.arguments)
+                fn_args = json.loads(raw_args or "{}")
             except Exception:
                 fn_args = {}
 
@@ -401,7 +650,7 @@ def run_chat_turn(
                     messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tc_id,
                             "content": json.dumps(tool_result),
                         }
                     )
@@ -410,7 +659,12 @@ def run_chat_turn(
             if cb.on_tool_executing:
                 cb.on_tool_executing(fn_name, fn_args)
 
-            raw_result = call_kali_api(fn_name, fn_args, server_url=server_url)
+            raw_result = call_kali_api(
+                fn_name,
+                fn_args,
+                server_url=server_url,
+                on_session=cb.on_http_session,
+            )
 
             if cb.on_tool_result:
                 cb.on_tool_result(fn_name, raw_result)
@@ -418,7 +672,7 @@ def run_chat_turn(
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tool_call.id,
+                    "tool_call_id": tc_id,
                     "content": json.dumps(raw_result),
                 }
             )

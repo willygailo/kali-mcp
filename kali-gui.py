@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Kali MCP Desktop GUI
---------------------
+Kali MCP Desktop GUI (Advanced Workbench)
+-----------------------------------------
 Side-by-side PySide6 GUI for Kali Linux MCP:
-- Left pane: Target input, quick scan presets, AI prompt, provider/server controls, and scan history.
-- Right pane: Instant live raw tool output (top) and AI analysis/findings (bottom), plus inline tool approval.
+- Top bar: Persistent SQLite Engagement/Project switcher, live server/tool status, LLM provider/model.
+- Left pane: Target input, presets, automated recon playbooks, advanced tool flags/wordlist picker,
+  AI prompt, direct tool runner, elapsed scan timer, and persisted scan history.
+- Right pane: Tabbed live view with simultaneous Raw Output + Streaming AI Analysis,
+  auto-parsed Findings & Ports table with follow-up triggers, and Lab/CTF Notes + Report Export.
 """
 
 import html
@@ -14,12 +17,15 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import requests
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -27,6 +33,8 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -34,8 +42,12 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
     QTextBrowser,
     QTextEdit,
     QVBoxLayout,
@@ -45,6 +57,7 @@ from PySide6.QtWidgets import (
 from kali_core import (
     AgentCallbacks,
     DEFAULT_KALI_SERVER_URL,
+    PLAYBOOKS,
     SYSTEM_PROMPT,
     call_kali_api,
     create_openai_client,
@@ -52,6 +65,9 @@ from kali_core import (
     resolve_provider_config,
     run_chat_turn,
 )
+from kali_parsers import parse_tool_output
+from kali_reports import generate_html_report, generate_markdown_report
+from kali_store import ProjectStore
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MANAGER_SCRIPT = os.path.join(SCRIPT_DIR, "kali-mcp-manager.sh")
@@ -80,17 +96,26 @@ QFrame#ApprovalBar {
 QLabel#SectionTitle {
     color: #58a6ff;
     font-weight: 700;
-    font-size: 12px;
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
-QLineEdit, QPlainTextEdit, QComboBox, QListWidget {
+QLineEdit, QPlainTextEdit, QComboBox, QListWidget, QTableWidget {
     background-color: #0d1117;
     color: #e6edf3;
     border: 1px solid #30363d;
     border-radius: 6px;
-    padding: 6px 8px;
+    padding: 5px 8px;
     selection-background-color: #1f6feb;
+}
+QHeaderView::section {
+    background-color: #161b22;
+    color: #58a6ff;
+    border: none;
+    border-bottom: 1px solid #30363d;
+    padding: 6px;
+    font-weight: 700;
+    font-size: 11px;
 }
 QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {
     border: 1px solid #58a6ff;
@@ -112,12 +137,42 @@ QTextEdit#RawOutput {
     font-family: "JetBrains Mono", "Fira Code", "DejaVu Sans Mono", monospace;
     font-size: 12px;
 }
+QTabWidget::pane {
+    border: none;
+}
+QTabBar::tab {
+    background-color: #161b22;
+    color: #8b949e;
+    border: 1px solid #30363d;
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 7px 14px;
+    margin-right: 4px;
+    font-weight: 600;
+}
+QTabBar::tab:selected {
+    background-color: #0d1117;
+    color: #58a6ff;
+    border-color: #388bfd;
+}
+QProgressBar {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    text-align: center;
+    height: 16px;
+    font-size: 11px;
+}
+QProgressBar::chunk {
+    background-color: #238636;
+}
 QPushButton {
     background-color: #21262d;
     color: #e6edf3;
     border: 1px solid #30363d;
     border-radius: 6px;
-    padding: 6px 12px;
+    padding: 6px 11px;
     font-weight: 600;
 }
 QPushButton:hover {
@@ -176,9 +231,10 @@ QSplitter::handle:vertical {
 
 
 class AgentWorker(QThread):
-    """Runs an AI agent chat turn in a background thread."""
+    """Runs a streaming AI agent chat turn in a background thread."""
 
     reasoning_received = Signal(str)
+    assistant_delta = Signal(str)
     assistant_received = Signal(str)
     tool_planned = Signal(str, dict, str)
     approval_requested = Signal(str, dict, str)
@@ -206,11 +262,17 @@ class AgentWorker(QThread):
         self._stop_requested = False
         self._approval_event = threading.Event()
         self._approval_result = False
+        self._active_session: Optional[requests.Session] = None
 
     def request_stop(self):
         self._stop_requested = True
         self._approval_result = False
         self._approval_event.set()
+        if self._active_session is not None:
+            try:
+                self._active_session.close()
+            except Exception:
+                pass
 
     def provide_approval(self, approved: bool):
         self._approval_result = approved
@@ -227,8 +289,12 @@ class AgentWorker(QThread):
             self._approval_event.wait()
             return self._approval_result
 
+        def set_session(sess: Optional[requests.Session]):
+            self._active_session = sess
+
         callbacks = AgentCallbacks(
             on_reasoning=lambda text: self.reasoning_received.emit(text),
+            on_assistant_delta=lambda chunk: self.assistant_delta.emit(chunk),
             on_assistant_message=lambda text: self.assistant_received.emit(text),
             on_tool_planned=lambda name, args, prev: self.tool_planned.emit(name, args, prev),
             on_confirm=on_confirm,
@@ -236,6 +302,7 @@ class AgentWorker(QThread):
             on_tool_result=lambda name, res: self.tool_result_received.emit(name, res),
             on_error=lambda etype, msg: self.error_received.emit(etype, msg),
             should_stop=lambda: self._stop_requested,
+            on_http_session=set_session,
         )
 
         run_chat_turn(
@@ -244,6 +311,7 @@ class AgentWorker(QThread):
             messages=self.messages,
             auto_approve=self.auto_approve,
             callbacks=callbacks,
+            stream=True,
         )
         self.finished_turn.emit(self.messages)
 
@@ -258,11 +326,107 @@ class DirectToolWorker(QThread):
         super().__init__()
         self.tool_name = tool_name
         self.tool_args = tool_args
+        self._active_session: Optional[requests.Session] = None
+
+    def request_stop(self):
+        if self._active_session is not None:
+            try:
+                self._active_session.close()
+            except Exception:
+                pass
 
     def run(self):
-        result = call_kali_api(self.tool_name, self.tool_args)
+        def set_session(sess: Optional[requests.Session]):
+            self._active_session = sess
+
+        result = call_kali_api(self.tool_name, self.tool_args, on_session=set_session)
         self.tool_result_received.emit(self.tool_name, result)
         self.finished_direct.emit()
+
+
+class PlaybookWorker(QThread):
+    """Executes a multi-step recon playbook sequentially."""
+
+    step_progress = Signal(int, int, str)
+    tool_result_received = Signal(str, dict)
+    finished_playbook = Signal(bool, str)
+
+    def __init__(self, target: str, steps: List[Dict[str, Any]], wordlist: str, extra_args: str):
+        super().__init__()
+        self.target = target
+        self.steps = steps
+        self.wordlist = wordlist
+        self.extra_args = extra_args
+        self._stop_requested = False
+        self._active_session: Optional[requests.Session] = None
+
+    def request_stop(self):
+        self._stop_requested = True
+        if self._active_session is not None:
+            try:
+                self._active_session.close()
+            except Exception:
+                pass
+
+    def run(self):
+        total = len(self.steps)
+        summaries: List[str] = []
+
+        def set_session(sess: Optional[requests.Session]):
+            self._active_session = sess
+
+        for idx, step in enumerate(self.steps, start=1):
+            if self._stop_requested:
+                self.finished_playbook.emit(False, "Playbook stopped by user.")
+                return
+
+            label = step["label"]
+            tool = step["tool"]
+            base_args = dict(step.get("args", {}))
+            self.step_progress.emit(idx, total, label)
+
+            if tool == "tls_http_check":
+                host = self.target.replace("https://", "").replace("http://", "").split("/")[0]
+                qhost = shlex.quote(host)
+                url = self.target if self.target.startswith(("http://", "https://")) else f"https://{host}"
+                qurl = shlex.quote(url)
+                cmd = (
+                    f"curl -skI --max-time 10 {qurl} | head -n 25; "
+                    f"echo '--- TLS ---'; "
+                    f"echo | openssl s_client -connect {qhost}:443 -servername {qhost} 2>&1 | head -n 45"
+                )
+                api_tool = "execute_command"
+                args: Dict[str, Any] = {"command": cmd}
+            elif tool == "gobuster_scan":
+                url = self.target if self.target.startswith(("http://", "https://")) else f"http://{self.target}"
+                api_tool = "gobuster_scan"
+                args = {
+                    "url": url,
+                    "mode": base_args.get("mode", "dir"),
+                    "wordlist": self.wordlist or "/usr/share/wordlists/dirb/common.txt",
+                    "additional_args": self.extra_args,
+                }
+            elif tool == "nikto_scan":
+                api_tool = "nikto_scan"
+                args = {"target": self.target, "additional_args": self.extra_args}
+            elif tool == "nmap_scan":
+                api_tool = "nmap_scan"
+                args = {
+                    "target": self.target,
+                    "scan_type": base_args.get("scan_type", "-sCV"),
+                    "ports": base_args.get("ports", ""),
+                    "additional_args": base_args.get("additional_args", "-T4"),
+                }
+            else:
+                api_tool = tool
+                args = {"target": self.target, **base_args}
+
+            res = call_kali_api(api_tool, args, on_session=set_session)
+            self.tool_result_received.emit(tool if tool == "tls_http_check" else api_tool, res)
+            out_snip = (res.get("stdout") or res.get("error") or "").strip()[:3000]
+            summaries.append(f"[{label}]\n{out_snip}")
+
+        self.finished_playbook.emit(True, "\n\n".join(summaries))
 
 
 class ServerActionWorker(QThread):
@@ -289,26 +453,36 @@ class ServerActionWorker(QThread):
 
 
 class KaliGuiWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, store: Optional[ProjectStore] = None):
         super().__init__()
-        self.setWindowTitle("Kali MCP AI & Pentest GUI")
-        self.resize(1380, 840)
+        self.setWindowTitle("Kali MCP AI Workbench")
+        self.resize(1460, 880)
 
+        self.store = store or ProjectStore()
+        self.current_engagement_id: int = 1
         self.messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        self.history_entries: List[Dict[str, str]] = []
+        self.history_entries: List[Dict[str, Any]] = []
+        self.current_findings: List[Dict[str, Any]] = []
         self.raw_log_plain = ""
         self.ai_markdown_sections: List[str] = []
+        self._streaming_section_index: Optional[int] = None
+        self._streaming_buffer = ""
         self.current_worker: Optional[QThread] = None
         self.server_worker: Optional[ServerActionWorker] = None
+        self._run_started_at: Optional[float] = None
 
         self._build_ui()
         self.setStyleSheet(DARK_STYLESHEET)
         self._load_provider_defaults()
+        self._load_engagements_combo()
         self.refresh_server_status()
 
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.refresh_server_status)
         self.status_timer.start(10000)
+
+        self.elapsed_timer = QTimer(self)
+        self.elapsed_timer.timeout.connect(self._update_elapsed_label)
 
     def _build_ui(self):
         central = QWidget()
@@ -322,13 +496,26 @@ class KaliGuiWindow(QMainWindow):
         top_bar.setObjectName("TopBar")
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(12, 8, 12, 8)
-        top_layout.setSpacing(10)
+        top_layout.setSpacing(8)
 
         title_lbl = QLabel("KALI MCP AI WORKBENCH")
-        title_lbl.setStyleSheet("font-size: 15px; font-weight: 800; color: #58a6ff; letter-spacing: 0.8px;")
+        title_lbl.setStyleSheet("font-size: 14px; font-weight: 800; color: #58a6ff; letter-spacing: 0.8px;")
         top_layout.addWidget(title_lbl)
 
-        self.server_status_lbl = QLabel("● Checking server...")
+        top_layout.addWidget(QLabel("Project:"))
+        self.engagement_combo = QComboBox()
+        self.engagement_combo.setMinimumWidth(170)
+        self.engagement_combo.currentIndexChanged.connect(self._on_engagement_changed)
+        top_layout.addWidget(self.engagement_combo)
+
+        btn_new_proj = QPushButton("+ New")
+        btn_new_proj.clicked.connect(self.create_new_engagement)
+        btn_del_proj = QPushButton("Del")
+        btn_del_proj.clicked.connect(self.delete_current_engagement)
+        top_layout.addWidget(btn_new_proj)
+        top_layout.addWidget(btn_del_proj)
+
+        self.server_status_lbl = QLabel("● Checking...")
         self.server_status_lbl.setStyleSheet("color: #d29922; font-weight: 600;")
         top_layout.addWidget(self.server_status_lbl)
 
@@ -344,16 +531,15 @@ class KaliGuiWindow(QMainWindow):
 
         top_layout.addStretch()
 
-        top_layout.addWidget(QLabel("Provider:"))
+        top_layout.addWidget(QLabel("LLM:"))
         self.provider_combo = QComboBox()
         self.provider_combo.addItem("NVIDIA NIM", "nvidia")
         self.provider_combo.addItem("OpenAI", "openai")
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         top_layout.addWidget(self.provider_combo)
 
-        top_layout.addWidget(QLabel("Model:"))
         self.model_input = QLineEdit()
-        self.model_input.setMinimumWidth(290)
+        self.model_input.setMinimumWidth(250)
         top_layout.addWidget(self.model_input)
 
         root_layout.addWidget(top_bar)
@@ -366,12 +552,12 @@ class KaliGuiWindow(QMainWindow):
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 6, 0)
-        left_layout.setSpacing(10)
+        left_layout.setSpacing(8)
 
         target_card = QFrame()
         target_card.setObjectName("PanelCard")
         tc_layout = QVBoxLayout(target_card)
-        tc_layout.setSpacing(8)
+        tc_layout.setSpacing(7)
 
         lbl_target = QLabel("Target (IP / Domain / URL)")
         lbl_target.setObjectName("SectionTitle")
@@ -379,23 +565,24 @@ class KaliGuiWindow(QMainWindow):
 
         self.target_input = QLineEdit()
         self.target_input.setObjectName("TargetInput")
-        self.target_input.setPlaceholderText("e.g. 127.0.0.1, dictionary.com, https://example.com")
+        self.target_input.setPlaceholderText("e.g. 10.10.10.5, example.com, https://target.local")
         self.target_input.returnPressed.connect(self.run_ai_scan)
+        self.target_input.editingFinished.connect(self._persist_current_target)
         tc_layout.addWidget(self.target_input)
 
-        lbl_presets = QLabel("Quick Presets (One-Click Fill)")
+        lbl_presets = QLabel("Quick Presets & Playbooks")
         lbl_presets.setObjectName("SectionTitle")
         tc_layout.addWidget(lbl_presets)
 
         preset_grid = QGridLayout()
-        preset_grid.setSpacing(6)
+        preset_grid.setSpacing(5)
         presets = [
-            ("Nmap (-sCV)", "nmap", "Run an Nmap -sCV -T4 port and service scan on {target} and summarize open ports and risks."),
-            ("Full Recon", "recon", "Perform reconnaissance on {target}: scan common ports with nmap, check HTTP headers, and inspect TLS/DNS info."),
-            ("Nikto Web", "nikto", "Run a Nikto web vulnerability scan against {target} and summarize findings."),
-            ("Gobuster Dir", "gobuster", "Run Gobuster directory enumeration on {target} using common.txt and report discovered paths."),
-            ("SQLmap", "sqlmap", "Check {target} with SQLmap (--batch) and report any potential SQL injection points."),
-            ("TLS / DNS Info", "tls_dns", "Run openssl s_client certificate/TLS check and dig DNS records on {target}, then summarize security posture."),
+            ("Nmap (-sCV)", "nmap_scan", "Run an Nmap -sCV -T4 port and service scan on {target} and summarize open ports and risks."),
+            ("Full Recon", "nmap_scan", "Perform reconnaissance on {target}: scan ports with nmap, check HTTP headers, TLS cert, and DNS info."),
+            ("Nikto Web", "nikto_scan", "Run a Nikto web vulnerability scan against {target} and summarize findings."),
+            ("Gobuster Dir", "gobuster_scan", "Run Gobuster directory enumeration on {target} and report discovered paths."),
+            ("SQLmap", "sqlmap_scan", "Check {target} with SQLmap and report any SQL injection points."),
+            ("TLS / DNS", "tls_dns", "Run openssl s_client certificate/TLS check and dig DNS records on {target}, then summarize findings."),
         ]
         for idx, (label, tool_key, template) in enumerate(presets):
             btn = QPushButton(label)
@@ -404,34 +591,96 @@ class KaliGuiWindow(QMainWindow):
             preset_grid.addWidget(btn, idx // 3, idx % 3)
         tc_layout.addLayout(preset_grid)
 
+        playbook_row = QHBoxLayout()
+        self.btn_pb_web = QPushButton("▶ Web Recon Pipeline")
+        self.btn_pb_web.setObjectName("PresetBtn")
+        self.btn_pb_web.clicked.connect(lambda: self.run_playbook("web_recon"))
+        self.btn_pb_net = QPushButton("▶ Network Audit Pipeline")
+        self.btn_pb_net.setObjectName("PresetBtn")
+        self.btn_pb_net.clicked.connect(lambda: self.run_playbook("network_audit"))
+        playbook_row.addWidget(self.btn_pb_web)
+        playbook_row.addWidget(self.btn_pb_net)
+        tc_layout.addLayout(playbook_row)
+
+        self.playbook_progress = QProgressBar()
+        self.playbook_progress.hide()
+        tc_layout.addWidget(self.playbook_progress)
+
+        # Collapsible Advanced Tool Options
+        self.adv_toggle = QCheckBox("Advanced Tool Options (Ports, Flags, Wordlist)")
+        self.adv_toggle.toggled.connect(self._toggle_advanced_box)
+        tc_layout.addWidget(self.adv_toggle)
+
+        self.adv_box = QFrame()
+        self.adv_box.setStyleSheet("QFrame { background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px; }")
+        adv_layout = QGridLayout(self.adv_box)
+        adv_layout.setContentsMargins(8, 8, 8, 8)
+        adv_layout.setSpacing(6)
+
+        adv_layout.addWidget(QLabel("Ports:"), 0, 0)
+        self.ports_input = QLineEdit()
+        self.ports_input.setPlaceholderText("e.g. 80,443 or 1-1000")
+        adv_layout.addWidget(self.ports_input, 0, 1)
+
+        adv_layout.addWidget(QLabel("Extra Flags:"), 1, 0)
+        self.flags_input = QLineEdit()
+        self.flags_input.setPlaceholderText("e.g. -T4 -Pn or --enumerate vp,u")
+        adv_layout.addWidget(self.flags_input, 1, 1)
+
+        adv_layout.addWidget(QLabel("Wordlist:"), 2, 0)
+        wl_row = QHBoxLayout()
+        self.wordlist_input = QLineEdit("/usr/share/wordlists/dirb/common.txt")
+        btn_wl_browse = QPushButton("...")
+        btn_wl_browse.setMaximumWidth(34)
+        btn_wl_browse.clicked.connect(self._browse_wordlist)
+        wl_row.addWidget(self.wordlist_input, 1)
+        wl_row.addWidget(btn_wl_browse)
+        adv_layout.addLayout(wl_row, 2, 1)
+
+        self.adv_box.hide()
+        tc_layout.addWidget(self.adv_box)
+
         lbl_prompt = QLabel("AI Prompt / Custom Command")
         lbl_prompt.setObjectName("SectionTitle")
         tc_layout.addWidget(lbl_prompt)
 
         self.prompt_input = QPlainTextEdit()
         self.prompt_input.setPlaceholderText(
-            "Ilagay dito ang gusto mong ipagawa sa AI (hal. 'Scan open ports and check SSL cert'). "
-            "Kapag blanko at nag-Run with AI, gagawa ng general recon sa Target."
+            "Enter AI instruction (or shell command when Direct Tool = Custom Shell). Leave blank for quick recon on Target."
         )
-        self.prompt_input.setMinimumHeight(95)
-        self.prompt_input.setMaximumHeight(150)
+        self.prompt_input.setMinimumHeight(80)
+        self.prompt_input.setMaximumHeight(130)
         tc_layout.addWidget(self.prompt_input)
 
         direct_row = QHBoxLayout()
         direct_row.addWidget(QLabel("Direct Tool:"))
         self.direct_tool_combo = QComboBox()
-        self.direct_tool_combo.addItem("nmap_scan (-sCV -T4)", "nmap_scan")
-        self.direct_tool_combo.addItem("nikto_scan", "nikto_scan")
-        self.direct_tool_combo.addItem("gobuster_scan (dir)", "gobuster_scan")
-        self.direct_tool_combo.addItem("sqlmap_scan (--batch)", "sqlmap_scan")
-        self.direct_tool_combo.addItem("TLS + DNS (openssl/dig)", "tls_dns")
-        self.direct_tool_combo.addItem("Custom Shell (Prompt Box)", "execute_command")
+        direct_tools = [
+            ("nmap_scan (-sCV -T4)", "nmap_scan"),
+            ("nikto_scan", "nikto_scan"),
+            ("gobuster_scan (dir)", "gobuster_scan"),
+            ("dirb_scan", "dirb_scan"),
+            ("sqlmap_scan (--batch)", "sqlmap_scan"),
+            ("wpscan_analyze", "wpscan_analyze"),
+            ("enum4linux_scan (-a)", "enum4linux_scan"),
+            ("tls_dns (openssl + dig)", "tls_dns"),
+            ("searchsploit (--json)", "searchsploit"),
+            ("Custom Shell (Prompt Box)", "execute_command"),
+        ]
+        for label, key in direct_tools:
+            self.direct_tool_combo.addItem(label, key)
         direct_row.addWidget(self.direct_tool_combo, 1)
         tc_layout.addLayout(direct_row)
 
-        self.auto_approve_chk = QCheckBox("Auto-approve tool calls (walang confirmation prompt)")
+        opt_row = QHBoxLayout()
+        self.auto_approve_chk = QCheckBox("Auto-approve tool calls")
         self.auto_approve_chk.setChecked(False)
-        tc_layout.addWidget(self.auto_approve_chk)
+        self.elapsed_lbl = QLabel("")
+        self.elapsed_lbl.setStyleSheet("color: #d29922; font-weight: 700;")
+        opt_row.addWidget(self.auto_approve_chk)
+        opt_row.addStretch()
+        opt_row.addWidget(self.elapsed_lbl)
+        tc_layout.addLayout(opt_row)
 
         action_row = QHBoxLayout()
         self.btn_run_ai = QPushButton("▶ Run with AI")
@@ -454,14 +703,14 @@ class KaliGuiWindow(QMainWindow):
 
         left_layout.addWidget(target_card)
 
-        # History Card
+        # History Card (SQLite persisted per engagement)
         hist_card = QFrame()
         hist_card.setObjectName("PanelCard")
         hc_layout = QVBoxLayout(hist_card)
         hc_layout.setSpacing(6)
 
         hist_header = QHBoxLayout()
-        lbl_hist = QLabel("Recent Scans / History")
+        lbl_hist = QLabel("Saved Scan History")
         lbl_hist.setObjectName("SectionTitle")
         hist_header.addWidget(lbl_hist)
         hist_header.addStretch()
@@ -476,13 +725,13 @@ class KaliGuiWindow(QMainWindow):
 
         left_layout.addWidget(hist_card, 1)
 
-        # ================= RIGHT PANE: Output & AI Analysis =================
+        # ================= RIGHT PANE: Output, Findings & Notes =================
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(6, 0, 0, 0)
-        right_layout.setSpacing(8)
+        right_layout.setSpacing(6)
 
-        # Inline Approval Banner (shown only when manual tool confirmation is needed)
+        # Inline Approval Banner
         self.approval_bar = QFrame()
         self.approval_bar.setObjectName("ApprovalBar")
         ab_layout = QHBoxLayout(self.approval_bar)
@@ -503,11 +752,17 @@ class KaliGuiWindow(QMainWindow):
         self.approval_bar.hide()
         right_layout.addWidget(self.approval_bar)
 
-        # Vertical splitter inside right pane so Raw Output & AI Analysis are both visible at once
-        output_splitter = QSplitter(Qt.Orientation.Vertical)
-        right_layout.addWidget(output_splitter, 1)
+        self.right_tabs = QTabWidget()
+        right_layout.addWidget(self.right_tabs, 1)
 
-        # Top-Right: Raw Tool Output
+        # --- TAB 1: Live Output & Streaming AI ---
+        live_tab = QWidget()
+        live_layout = QVBoxLayout(live_tab)
+        live_layout.setContentsMargins(0, 4, 0, 0)
+
+        output_splitter = QSplitter(Qt.Orientation.Vertical)
+        live_layout.addWidget(output_splitter, 1)
+
         raw_card = QFrame()
         raw_card.setObjectName("PanelCard")
         raw_layout = QVBoxLayout(raw_card)
@@ -537,17 +792,16 @@ class KaliGuiWindow(QMainWindow):
         self.raw_output = QTextEdit()
         self.raw_output.setObjectName("RawOutput")
         self.raw_output.setReadOnly(True)
-        self.raw_output.setPlaceholderText("Lalabas dito agad ang raw stdout/stderr mula sa mga Kali tools (nmap, nikto, gobuster, openssl, atbp.)...")
+        self.raw_output.setPlaceholderText("Live raw stdout/stderr from Kali tools appears here...")
         raw_layout.addWidget(self.raw_output, 1)
 
-        # Bottom-Right: AI Analysis & Findings
         ai_card = QFrame()
         ai_card.setObjectName("PanelCard")
         ai_layout = QVBoxLayout(ai_card)
         ai_layout.setSpacing(6)
 
         ai_hdr = QHBoxLayout()
-        lbl_ai = QLabel("AI Analysis & Findings")
+        lbl_ai = QLabel("AI Analysis & Findings (Live Streaming)")
         lbl_ai.setObjectName("SectionTitle")
         ai_hdr.addWidget(lbl_ai)
         ai_hdr.addStretch()
@@ -567,18 +821,116 @@ class KaliGuiWindow(QMainWindow):
         self.ai_output = QTextBrowser()
         self.ai_output.setObjectName("AiOutput")
         self.ai_output.setOpenExternalLinks(True)
-        self.ai_output.setPlaceholderText("Lalabas dito ang malinaw na buod, findings, at rekomendasyon ng AI...")
+        self.ai_output.setPlaceholderText("Real-time AI analysis, attack paths, and recommendations stream here...")
         ai_layout.addWidget(self.ai_output, 1)
 
         output_splitter.addWidget(raw_card)
         output_splitter.addWidget(ai_card)
         output_splitter.setSizes([430, 330])
 
+        self.right_tabs.addTab(live_tab, "📺 Live Output && AI")
+
+        # --- TAB 2: Structured Findings & Ports Table ---
+        findings_tab = QWidget()
+        ft_layout = QVBoxLayout(findings_tab)
+        ft_layout.setContentsMargins(0, 6, 0, 0)
+        ft_layout.setSpacing(8)
+
+        ft_toolbar = QHBoxLayout()
+        self.findings_filter_input = QLineEdit()
+        self.findings_filter_input.setPlaceholderText("Filter findings (host, port, service, keyword)...")
+        self.findings_filter_input.textChanged.connect(self._render_findings_table)
+
+        self.severity_filter_combo = QComboBox()
+        for s in ["All", "Critical", "High", "Medium", "Low", "Info"]:
+            self.severity_filter_combo.addItem(s)
+        self.severity_filter_combo.currentIndexChanged.connect(self._render_findings_table)
+
+        self.btn_followup = QPushButton("⚡ Run Follow-Up on Selected")
+        self.btn_followup.setObjectName("DirectBtn")
+        self.btn_followup.clicked.connect(self.run_selected_followup)
+
+        btn_clear_findings = QPushButton("Clear Findings")
+        btn_clear_findings.clicked.connect(self.clear_engagement_findings)
+
+        ft_toolbar.addWidget(self.findings_filter_input, 1)
+        ft_toolbar.addWidget(self.severity_filter_combo)
+        ft_toolbar.addWidget(self.btn_followup)
+        ft_toolbar.addWidget(btn_clear_findings)
+        ft_layout.addLayout(ft_toolbar)
+
+        self.findings_table = QTableWidget(0, 6)
+        self.findings_table.setHorizontalHeaderLabels(["Severity", "Host", "Port", "Service", "Finding", "Source"])
+        self.findings_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.findings_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        hdr = self.findings_table.horizontalHeader()
+        if hdr is not None:
+            hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        ft_layout.addWidget(self.findings_table, 1)
+
+        self.right_tabs.addTab(findings_tab, "🎯 Findings && Ports (0)")
+
+        # --- TAB 3: Lab / CTF Notes & Report Export ---
+        notes_tab = QWidget()
+        nt_layout = QVBoxLayout(notes_tab)
+        nt_layout.setContentsMargins(0, 6, 0, 0)
+        nt_layout.setSpacing(8)
+
+        nt_bar = QHBoxLayout()
+        lbl_notes = QLabel("Lab / CTF Notes, Credentials & Flags (Auto-saved per Project)")
+        lbl_notes.setObjectName("SectionTitle")
+        nt_bar.addWidget(lbl_notes)
+        nt_bar.addStretch()
+
+        btn_save_notes = QPushButton("💾 Save Notes")
+        btn_save_notes.clicked.connect(self.save_current_notes)
+        btn_export_html = QPushButton("📄 Export HTML Report")
+        btn_export_html.setObjectName("PrimaryBtn")
+        btn_export_html.clicked.connect(lambda: self.export_full_report("html"))
+        btn_export_md = QPushButton("📝 Export Markdown")
+        btn_export_md.setObjectName("DirectBtn")
+        btn_export_md.clicked.connect(lambda: self.export_full_report("md"))
+
+        nt_bar.addWidget(btn_save_notes)
+        nt_bar.addWidget(btn_export_html)
+        nt_bar.addWidget(btn_export_md)
+        nt_layout.addLayout(nt_bar)
+
+        self.notes_edit = QPlainTextEdit()
+        self.notes_edit.setPlaceholderText(
+            "Track discovered flags, credentials, endpoints, pivot commands, or CTF writeup notes here..."
+        )
+        nt_layout.addWidget(self.notes_edit, 1)
+
+        self.right_tabs.addTab(notes_tab, "📝 Notes && Report Export")
+
         main_splitter.addWidget(left_widget)
         main_splitter.addWidget(right_widget)
-        main_splitter.setSizes([460, 900])
+        main_splitter.setSizes([470, 960])
 
-        self.statusBar().showMessage("Ready. Ilagay ang Target sa kaliwa at pindutin ang Run.")
+        self._set_status("Ready. Enter Target on the left and run AI, Direct Tool, or a Playbook.")
+
+    # ---------------- UI Helpers ----------------
+    def _set_status(self, text: str, timeout: int = 0):
+        sb = self.statusBar()
+        if sb is not None:
+            sb.showMessage(text, timeout)
+
+    def _toggle_advanced_box(self, checked: bool):
+        self.adv_box.setVisible(checked)
+
+    def _browse_wordlist(self):
+        start_dir = "/usr/share/wordlists" if os.path.isdir("/usr/share/wordlists") else SCRIPT_DIR
+        path, _ = QFileDialog.getOpenFileName(self, "Select Wordlist", start_dir)
+        if path:
+            self.wordlist_input.setText(path)
+
+    def _update_elapsed_label(self):
+        if self._run_started_at is None:
+            self.elapsed_lbl.setText("")
+            return
+        secs = int(time.time() - self._run_started_at)
+        self.elapsed_lbl.setText(f"⏱ {secs // 60:02d}:{secs % 60:02d}")
 
     # ---------------- Provider & Server Helpers ----------------
     def _load_provider_defaults(self):
@@ -588,18 +940,25 @@ class KaliGuiWindow(QMainWindow):
             self.provider_combo.blockSignals(True)
             self.provider_combo.setCurrentIndex(idx)
             self.provider_combo.blockSignals(False)
-        self.model_input.setText(cfg["model"])
+        self.model_input.setText(str(cfg["model"]))
+        self.model_input.setCursorPosition(0)
 
     def _on_provider_changed(self):
         provider = self.provider_combo.currentData()
         cfg = resolve_provider_config(provider=provider)
-        self.model_input.setText(cfg["model"])
+        self.model_input.setText(str(cfg["model"]))
+        self.model_input.setCursorPosition(0)
 
     def refresh_server_status(self):
         health = get_kali_server_health(timeout=1.5)
         if health.get("ok"):
-            self.server_status_lbl.setText(f"● Running ({DEFAULT_KALI_SERVER_URL})")
+            tools_map = (health.get("data") or {}).get("tools_status", {})
+            ready_count = sum(1 for v in tools_map.values() if v)
+            suffix = f" | {ready_count}/{len(tools_map)} core tools" if tools_map else ""
+            self.server_status_lbl.setText(f"● Running ({DEFAULT_KALI_SERVER_URL}{suffix})")
             self.server_status_lbl.setStyleSheet("color: #3fb950; font-weight: 700;")
+            if tools_map:
+                self.server_status_lbl.setToolTip(json.dumps(tools_map, indent=2))
         else:
             self.server_status_lbl.setText("● Offline (127.0.0.1:5000)")
             self.server_status_lbl.setStyleSheet("color: #f85149; font-weight: 700;")
@@ -607,7 +966,7 @@ class KaliGuiWindow(QMainWindow):
     def run_server_action(self, action: str):
         if self.server_worker and self.server_worker.isRunning():
             return
-        self.statusBar().showMessage(f"Running server action: {action}...")
+        self._set_status(f"Running server action: {action}...")
         self.server_worker = ServerActionWorker(action)
         self.server_worker.completed.connect(self._on_server_action_done)
         self.server_worker.start()
@@ -616,9 +975,128 @@ class KaliGuiWindow(QMainWindow):
         self.refresh_server_status()
         if output:
             self.append_raw_log(output, level="info" if ok else "error")
-        self.statusBar().showMessage("Server command completed." if ok else "Server command failed.")
+        self._set_status("Server command completed." if ok else "Server command failed.", 4000)
 
-    # ---------------- Output Formatting Helpers ----------------
+    # ---------------- Engagement / SQLite Workspace ----------------
+    def _load_engagements_combo(self, select_id: Optional[int] = None):
+        engagements = self.store.list_engagements()
+        self.engagement_combo.blockSignals(True)
+        self.engagement_combo.clear()
+        target_idx = 0
+        for idx, eng in enumerate(engagements):
+            self.engagement_combo.addItem(eng["name"], eng["id"])
+            if select_id is not None and eng["id"] == select_id:
+                target_idx = idx
+        self.engagement_combo.setCurrentIndex(target_idx)
+        self.engagement_combo.blockSignals(False)
+        if engagements:
+            self._switch_to_engagement(int(self.engagement_combo.currentData()))
+
+    def _on_engagement_changed(self):
+        eng_id = self.engagement_combo.currentData()
+        if eng_id is not None:
+            self._switch_to_engagement(int(eng_id))
+
+    def _switch_to_engagement(self, engagement_id: int):
+        self.current_engagement_id = engagement_id
+        eng = self.store.get_engagement(engagement_id)
+        if not eng:
+            return
+        self.target_input.setText(eng.get("target", ""))
+        self.notes_edit.setPlainText(eng.get("notes", ""))
+
+        loaded_msgs = self.store.load_chat_messages(engagement_id)
+        self.messages = loaded_msgs if loaded_msgs else [{"role": "system", "content": SYSTEM_PROMPT}]
+
+        self.clear_raw_output()
+        self.clear_ai_output()
+        self._reload_history_from_store()
+        self._reload_findings_from_store()
+
+    def _persist_current_target(self):
+        self.store.update_engagement_target(self.current_engagement_id, self.target_input.text().strip())
+
+    def create_new_engagement(self):
+        name, ok = QInputDialog.getText(self, "New Project / Lab", "Project or CTF name:")
+        if ok and name.strip():
+            eng = self.store.create_or_get_engagement(name.strip(), target=self.target_input.text().strip())
+            self._load_engagements_combo(select_id=int(eng["id"]))
+
+    def delete_current_engagement(self):
+        if len(self.store.list_engagements()) <= 1:
+            QMessageBox.information(self, "Cannot Delete", "At least one project must remain.")
+            return
+        ans = QMessageBox.question(
+            self,
+            "Delete Project",
+            "Delete the selected project and all of its saved scans/findings?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans == QMessageBox.StandardButton.Yes:
+            self.store.delete_engagement(self.current_engagement_id)
+            self._load_engagements_combo()
+
+    def save_current_notes(self):
+        self.store.update_engagement_notes(self.current_engagement_id, self.notes_edit.toPlainText())
+        self._set_status("Lab / CTF notes saved.", 3000)
+
+    def _reload_history_from_store(self):
+        self.history_entries = self.store.list_scans(self.current_engagement_id)
+        self.history_list.clear()
+        for idx, entry in enumerate(self.history_entries):
+            item = QListWidgetItem(f"[{entry['created_at'][11:]}] {entry['title']}")
+            item.setData(Qt.ItemDataRole.UserRole, idx)
+            self.history_list.addItem(item)
+
+    def _reload_findings_from_store(self):
+        self.current_findings = self.store.list_findings(self.current_engagement_id)
+        self._render_findings_table()
+
+    def _render_findings_table(self):
+        query = self.findings_filter_input.text().strip().lower()
+        sev_filter = self.severity_filter_combo.currentText()
+        sev_colors = {
+            "Critical": "#f85149",
+            "High": "#db6d28",
+            "Medium": "#d29922",
+            "Low": "#58a6ff",
+            "Info": "#8b949e",
+        }
+
+        filtered: List[Dict[str, Any]] = []
+        for f in self.current_findings:
+            if sev_filter != "All" and f.get("severity") != sev_filter:
+                continue
+            blob = " ".join(
+                str(f.get(k, "")) for k in ("severity", "host", "port", "service", "title", "details", "source_tool")
+            ).lower()
+            if query and query not in blob:
+                continue
+            filtered.append(f)
+
+        self.findings_table.setRowCount(len(filtered))
+        for row_idx, f in enumerate(filtered):
+            sev = str(f.get("severity", "Info"))
+            sev_item = QTableWidgetItem(sev)
+            sev_item.setForeground(QColor(sev_colors.get(sev, "#e6edf3")))
+            sev_item.setData(Qt.ItemDataRole.UserRole, f)
+
+            self.findings_table.setItem(row_idx, 0, sev_item)
+            self.findings_table.setItem(row_idx, 1, QTableWidgetItem(str(f.get("host", "-"))))
+            self.findings_table.setItem(row_idx, 2, QTableWidgetItem(str(f.get("port", "-"))))
+            self.findings_table.setItem(row_idx, 3, QTableWidgetItem(str(f.get("service", "-"))))
+            title_item = QTableWidgetItem(str(f.get("title", "")))
+            title_item.setToolTip(str(f.get("details", "")))
+            self.findings_table.setItem(row_idx, 4, title_item)
+            self.findings_table.setItem(row_idx, 5, QTableWidgetItem(str(f.get("source_tool", "-"))))
+
+        self.right_tabs.setTabText(1, f"🎯 Findings && Ports ({len(self.current_findings)})")
+
+    def clear_engagement_findings(self):
+        self.store.clear_findings(self.current_engagement_id)
+        self._reload_findings_from_store()
+
+    # ---------------- Output Formatting & Streaming ----------------
     def append_raw_log(self, text: str, level: str = "stdout"):
         if not text:
             return
@@ -637,8 +1115,26 @@ class KaliGuiWindow(QMainWindow):
         self.raw_output.moveCursor(QTextCursor.MoveOperation.End)
         self.raw_log_plain += text + "\n"
 
+    def append_ai_delta(self, chunk: str):
+        if self._streaming_section_index is None:
+            self._streaming_buffer = chunk
+            self.ai_markdown_sections.append(self._streaming_buffer)
+            self._streaming_section_index = len(self.ai_markdown_sections) - 1
+        else:
+            self._streaming_buffer += chunk
+            self.ai_markdown_sections[self._streaming_section_index] = self._streaming_buffer
+        self._render_ai_markdown()
+
     def append_ai_section(self, markdown_text: str):
-        self.ai_markdown_sections.append(markdown_text)
+        if self._streaming_section_index is not None:
+            self.ai_markdown_sections[self._streaming_section_index] = markdown_text
+            self._streaming_section_index = None
+            self._streaming_buffer = ""
+        else:
+            self.ai_markdown_sections.append(markdown_text)
+        self._render_ai_markdown()
+
+    def _render_ai_markdown(self):
         combined = "\n\n---\n\n".join(self.ai_markdown_sections)
         self.ai_output.setMarkdown(combined)
         sb = self.ai_output.verticalScrollBar()
@@ -652,58 +1148,69 @@ class KaliGuiWindow(QMainWindow):
     def clear_ai_output(self):
         self.ai_output.clear()
         self.ai_markdown_sections.clear()
+        self._streaming_section_index = None
+        self._streaming_buffer = ""
 
     def _copy_text(self, text: str):
         if not text.strip():
             return
         QApplication.clipboard().setText(text)
-        self.statusBar().showMessage("Copied to clipboard.", 3000)
+        self._set_status("Copied to clipboard.", 3000)
 
     def _save_text(self, text: str, default_name: str):
         if not text.strip():
-            QMessageBox.information(self, "Nothing to Save", "Walang laman ang output na ise-save.")
+            QMessageBox.information(self, "Nothing to Save", "Output is empty.")
             return
         path, _ = QFileDialog.getSaveFileName(self, "Save Output", os.path.join(SCRIPT_DIR, default_name))
         if path:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text)
-            self.statusBar().showMessage(f"Saved to {path}", 4000)
+            self._set_status(f"Saved to {path}", 4000)
+
+    def export_full_report(self, fmt: str):
+        self.save_current_notes()
+        eng = self.store.get_engagement(self.current_engagement_id) or {"name": "Lab / CTF", "target": "", "notes": ""}
+        scans = self.store.list_scans(self.current_engagement_id)
+        findings = self.store.list_findings(self.current_engagement_id)
+        ai_summary = "\n\n---\n\n".join(self.ai_markdown_sections)
+
+        ext = "html" if fmt == "html" else "md"
+        default_file = os.path.join(SCRIPT_DIR, f"kali-report.{ext}")
+        path, _ = QFileDialog.getSaveFileName(self, f"Export {ext.upper()} Report", default_file)
+        if not path:
+            return
+        content = (
+            generate_html_report(eng, findings, scans, ai_summary)
+            if fmt == "html"
+            else generate_markdown_report(eng, findings, scans, ai_summary)
+        )
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        self._set_status(f"Exported report to {path}", 5000)
 
     # ---------------- Presets & History ----------------
     def apply_preset(self, tool_key: str, template: str):
         target = self.target_input.text().strip() or "<target>"
         self.prompt_input.setPlainText(template.format(target=target))
+        idx = self.direct_tool_combo.findData(tool_key)
+        if idx >= 0:
+            self.direct_tool_combo.setCurrentIndex(idx)
 
-        tool_map = {
-            "nmap": "nmap_scan",
-            "nikto": "nikto_scan",
-            "gobuster": "gobuster_scan",
-            "sqlmap": "sqlmap_scan",
-            "tls_dns": "tls_dns",
-            "recon": "nmap_scan",
-        }
-        mapped = tool_map.get(tool_key)
-        if mapped:
-            idx = self.direct_tool_combo.findData(mapped)
-            if idx >= 0:
-                self.direct_tool_combo.setCurrentIndex(idx)
-
-    def _save_history_snapshot(self, label: str, target: str):
-        ts = datetime.now().strftime("%H:%M:%S")
-        entry = {
-            "title": f"[{ts}] {label} — {target}",
-            "target": target,
-            "raw": self.raw_output.toPlainText(),
-            "ai": "\n\n---\n\n".join(self.ai_markdown_sections),
-        }
-        self.history_entries.insert(0, entry)
-        item = QListWidgetItem(entry["title"])
-        item.setData(Qt.ItemDataRole.UserRole, 0)
-        self.history_list.insertItem(0, item)
-        for i in range(self.history_list.count()):
-            hist_item = self.history_list.item(i)
-            if hist_item is not None:
-                hist_item.setData(Qt.ItemDataRole.UserRole, i)
+    def _save_history_snapshot(self, label: str, tool_name: str, target: str):
+        raw_text = self.raw_output.toPlainText()
+        ai_text = "\n\n---\n\n".join(self.ai_markdown_sections)
+        parsed = [f.to_dict() for f in parse_tool_output(tool_name, raw_text, target)]
+        self.store.save_scan_and_findings(
+            engagement_id=self.current_engagement_id,
+            title=f"{label} — {target}",
+            tool_name=tool_name,
+            target=target,
+            raw_output=raw_text,
+            ai_analysis=ai_text,
+            findings=parsed,
+        )
+        self._reload_history_from_store()
+        self._reload_findings_from_store()
 
     def _on_history_clicked(self, item: QListWidgetItem):
         idx = item.data(Qt.ItemDataRole.UserRole)
@@ -712,24 +1219,36 @@ class KaliGuiWindow(QMainWindow):
         entry = self.history_entries[idx]
         self.target_input.setText(entry["target"])
         self.clear_raw_output()
-        if entry["raw"]:
-            self.append_raw_log(entry["raw"], level="stdout")
+        if entry["raw_output"]:
+            self.append_raw_log(entry["raw_output"], level="stdout")
         self.clear_ai_output()
-        if entry["ai"]:
-            self.ai_markdown_sections = [entry["ai"]]
-            self.ai_output.setMarkdown(entry["ai"])
+        if entry["ai_analysis"]:
+            self.ai_markdown_sections = [entry["ai_analysis"]]
+            self._render_ai_markdown()
+        self.right_tabs.setCurrentIndex(0)
 
     def reset_ai_context(self):
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.store.save_chat_messages(self.current_engagement_id, self.messages)
         self.clear_ai_output()
-        self.statusBar().showMessage("AI conversation context reset.", 3000)
+        self._set_status("AI conversation context reset.", 3000)
 
     # ---------------- Execution Controls ----------------
     def _set_running_state(self, running: bool):
         self.btn_run_ai.setEnabled(not running)
         self.btn_run_direct.setEnabled(not running)
         self.btn_analyze_raw.setEnabled(not running)
+        self.btn_pb_web.setEnabled(not running)
+        self.btn_pb_net.setEnabled(not running)
         self.btn_stop.setEnabled(running)
+        if running:
+            self._run_started_at = time.time()
+            self.elapsed_timer.start(1000)
+            self._update_elapsed_label()
+        else:
+            self.elapsed_timer.stop()
+            self._run_started_at = None
+            self.elapsed_lbl.setText("")
 
     def _ensure_server_ready(self) -> bool:
         if get_kali_server_health(timeout=1.5).get("ok"):
@@ -737,7 +1256,7 @@ class KaliGuiWindow(QMainWindow):
         ans = QMessageBox.question(
             self,
             "Kali Server Offline",
-            "Hindi pa tumatakbo ang kali-server-mcp sa 127.0.0.1:5000.\nGusto mo bang i-start ito ngayon?",
+            "kali-server-mcp is not running on 127.0.0.1:5000.\nStart it now?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if ans == QMessageBox.StandardButton.Yes:
@@ -745,7 +1264,7 @@ class KaliGuiWindow(QMainWindow):
             self.refresh_server_status()
             if proc.stdout:
                 self.append_raw_log(proc.stdout.strip(), level="info")
-            return get_kali_server_health(timeout=2.0).get("ok")
+            return bool(get_kali_server_health(timeout=2.0).get("ok"))
         return False
 
     def run_ai_scan(self):
@@ -755,9 +1274,10 @@ class KaliGuiWindow(QMainWindow):
         target = self.target_input.text().strip()
         prompt_text = self.prompt_input.toPlainText().strip()
         if not target and not prompt_text:
-            QMessageBox.warning(self, "Missing Input", "Ilagay muna ang Target o ang AI Prompt sa kaliwa.")
+            QMessageBox.warning(self, "Missing Input", "Enter a Target or AI Prompt in the left pane.")
             return
 
+        self._persist_current_target()
         provider = self.provider_combo.currentData()
         model = self.model_input.text().strip()
         cfg = resolve_provider_config(provider=provider, model=model or None)
@@ -765,7 +1285,7 @@ class KaliGuiWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "Missing API Key",
-                f"Walang API key para sa {cfg['provider_label']}. I-launch gamit ang ./run-gui.sh o i-export ang NVIDIA_API_KEY / OPENAI_API_KEY.",
+                f"No API key configured for {cfg['provider_label']}. Add it to .env or launch via ./run-gui.sh.",
             )
             return
 
@@ -782,114 +1302,202 @@ class KaliGuiWindow(QMainWindow):
         ts = datetime.now().strftime("%H:%M:%S")
         self.append_raw_log(f"\n=== [{ts}] AI Task | Target: {target or 'N/A'} ===", level="cmd")
         self.append_ai_section(f"**User ({ts}):** {full_prompt}")
+        self._streaming_section_index = None
+        self._streaming_buffer = ""
 
         self.messages.append({"role": "user", "content": full_prompt})
         self._set_running_state(True)
-        self.statusBar().showMessage(f"Running AI ({cfg['provider_label']}: {cfg['model']})...")
+        self.right_tabs.setCurrentIndex(0)
+        self._set_status(f"Streaming AI ({cfg['provider_label']}: {cfg['model']})...")
 
         worker = AgentWorker(
-            provider=cfg["provider"],
-            model=cfg["model"],
+            provider=str(cfg["provider"]),
+            model=str(cfg["model"]),
             api_key=cfg["api_key"],
             base_url=cfg["base_url"],
             messages=self.messages,
             auto_approve=self.auto_approve_chk.isChecked(),
         )
         worker.reasoning_received.connect(lambda r: self.append_raw_log(f"[AI Reasoning]\n{r}", level="info"))
+        worker.assistant_delta.connect(self.append_ai_delta)
         worker.assistant_received.connect(self.append_ai_section)
         worker.tool_planned.connect(self._on_tool_planned)
         worker.approval_requested.connect(self._on_approval_requested)
         worker.tool_executing.connect(lambda name, _args: self.append_raw_log(f"[*] Executing {name}...", level="info"))
-        worker.tool_result_received.connect(self._on_tool_result)
+        worker.tool_result_received.connect(lambda name, res: self._on_tool_result(name, res, target or "Prompt"))
         worker.error_received.connect(lambda etype, msg: self.append_raw_log(f"[!] {etype.upper()} Error: {msg}", level="error"))
         worker.finished_turn.connect(lambda updated_msgs: self._on_ai_finished(updated_msgs, target or "Prompt"))
         self.current_worker = worker
         worker.start()
 
-    def run_direct_tool(self):
-        if self.current_worker and self.current_worker.isRunning():
-            return
-
-        tool_key = self.direct_tool_combo.currentData()
-        target = self.target_input.text().strip()
-        prompt_text = self.prompt_input.toPlainText().strip()
+    def _build_direct_tool_call(self, tool_key: str, target: str, prompt_text: str) -> Optional[tuple[str, Dict[str, Any]]]:
+        ports = self.ports_input.text().strip()
+        extra_flags = self.flags_input.text().strip()
+        wordlist = self.wordlist_input.text().strip() or "/usr/share/wordlists/dirb/common.txt"
 
         if tool_key == "execute_command":
             if not prompt_text:
-                QMessageBox.warning(self, "Missing Command", "Ilagay ang shell command sa Prompt box.")
-                return
-            tool_name = "execute_command"
-            tool_args = {"command": prompt_text}
-        elif tool_key == "tls_dns":
-            if not target:
-                QMessageBox.warning(self, "Missing Target", "Ilagay muna ang Target domain/IP.")
-                return
+                QMessageBox.warning(self, "Missing Command", "Enter a shell command in the Prompt box.")
+                return None
+            return ("execute_command", {"command": prompt_text})
+
+        if not target:
+            QMessageBox.warning(self, "Missing Target", "Enter a Target IP, domain, or URL.")
+            return None
+
+        if tool_key == "tls_dns":
             host = target.replace("https://", "").replace("http://", "").split("/")[0]
             qhost = shlex.quote(host)
             cmd = (
                 f"echo | openssl s_client -connect {qhost}:443 -servername {qhost} 2>&1 | head -n 65; "
                 f"echo '--- DNS ---'; dig +short {qhost} A {qhost} NS {qhost} TXT"
             )
-            tool_name = "execute_command"
-            tool_args = {"command": cmd}
-        else:
-            if not target:
-                QMessageBox.warning(self, "Missing Target", "Ilagay muna ang Target IP, domain, o URL.")
-                return
-            tool_name = tool_key
-            if tool_key == "nmap_scan":
-                tool_args = {"target": target, "scan_type": "-sCV", "additional_args": "-T4"}
-            elif tool_key == "nikto_scan":
-                tool_args = {"target": target}
-            elif tool_key == "gobuster_scan":
-                url = target if target.startswith(("http://", "https://")) else f"http://{target}"
-                tool_args = {"url": url, "mode": "dir", "wordlist": "/usr/share/wordlists/dirb/common.txt"}
-            elif tool_key == "sqlmap_scan":
-                url = target if target.startswith(("http://", "https://")) else f"http://{target}"
-                tool_args = {"url": url, "additional_args": "--batch"}
-            else:
-                tool_args = {"target": target}
+            return ("execute_command", {"command": cmd})
+
+        if tool_key == "searchsploit":
+            return ("execute_command", {"command": f"searchsploit --json {shlex.quote(target)}"})
+
+        url = target if target.startswith(("http://", "https://")) else f"http://{target}"
+        if tool_key == "nmap_scan":
+            return ("nmap_scan", {"target": target, "scan_type": "-sCV", "ports": ports, "additional_args": extra_flags or "-T4"})
+        if tool_key == "nikto_scan":
+            return ("nikto_scan", {"target": target, "additional_args": extra_flags})
+        if tool_key == "gobuster_scan":
+            return ("gobuster_scan", {"url": url, "mode": "dir", "wordlist": wordlist, "additional_args": extra_flags})
+        if tool_key == "dirb_scan":
+            return ("dirb_scan", {"url": url, "wordlist": wordlist, "additional_args": extra_flags})
+        if tool_key == "sqlmap_scan":
+            return ("sqlmap_scan", {"url": url, "additional_args": extra_flags})
+        if tool_key == "wpscan_analyze":
+            return ("wpscan_analyze", {"url": url, "additional_args": extra_flags or "--enumerate vp,u"})
+        if tool_key == "enum4linux_scan":
+            return ("enum4linux_scan", {"target": target, "additional_args": extra_flags or "-a"})
+        return (tool_key, {"target": target})
+
+    def run_direct_tool(self):
+        if self.current_worker and self.current_worker.isRunning():
+            return
+
+        tool_key = str(self.direct_tool_combo.currentData())
+        target = self.target_input.text().strip()
+        prompt_text = self.prompt_input.toPlainText().strip()
+        built = self._build_direct_tool_call(tool_key, target, prompt_text)
+        if not built:
+            return
+        api_tool, tool_args = built
 
         if not self._ensure_server_ready():
             return
 
+        self._persist_current_target()
         ts = datetime.now().strftime("%H:%M:%S")
-        self.append_raw_log(f"\n=== [{ts}] Direct: {tool_name} | {json.dumps(tool_args)} ===", level="cmd")
+        self.append_raw_log(f"\n=== [{ts}] Direct: {tool_key} | {json.dumps(tool_args)} ===", level="cmd")
         self._set_running_state(True)
-        self.statusBar().showMessage(f"Executing {tool_name} directly on Kali server...")
+        self.right_tabs.setCurrentIndex(0)
+        self._set_status(f"Executing {tool_key} directly on Kali server...")
 
-        worker = DirectToolWorker(tool_name, tool_args)
-        worker.tool_result_received.connect(self._on_tool_result)
-        worker.finished_direct.connect(lambda: self._on_direct_finished(tool_name, target or "Command"))
+        worker = DirectToolWorker(api_tool, tool_args)
+        worker.tool_result_received.connect(lambda _name, res: self._on_tool_result(tool_key, res, target or "Command"))
+        worker.finished_direct.connect(lambda: self._on_direct_finished(tool_key, target or "Command"))
         self.current_worker = worker
         worker.start()
+
+    def run_playbook(self, playbook_key: str):
+        if self.current_worker and self.current_worker.isRunning():
+            return
+        target = self.target_input.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Missing Target", "Enter a Target before running a Playbook.")
+            return
+        if not self._ensure_server_ready():
+            return
+
+        self._persist_current_target()
+        pb = PLAYBOOKS[playbook_key]
+        steps = pb["steps"]
+        self.playbook_progress.setMaximum(len(steps))
+        self.playbook_progress.setValue(0)
+        self.playbook_progress.show()
+
+        self.append_raw_log(f"\n=== Playbook: {pb['name']} | Target: {target} ===", level="cmd")
+        self._set_running_state(True)
+        self.right_tabs.setCurrentIndex(0)
+
+        worker = PlaybookWorker(
+            target=target,
+            steps=steps,
+            wordlist=self.wordlist_input.text().strip(),
+            extra_args=self.flags_input.text().strip(),
+        )
+        worker.step_progress.connect(self._on_playbook_step)
+        worker.tool_result_received.connect(lambda tname, res: self._on_tool_result(tname, res, target))
+        worker.finished_playbook.connect(lambda ok, summary: self._on_playbook_finished(pb["name"], target, ok, summary))
+        self.current_worker = worker
+        worker.start()
+
+    def _on_playbook_step(self, step_idx: int, total: int, label: str):
+        self.playbook_progress.setValue(step_idx)
+        self.playbook_progress.setFormat(f"Step {step_idx}/{total}: {label}")
+        self.append_raw_log(f"\n[*] Playbook Step {step_idx}/{total}: {label}...", level="info")
+        self._set_status(f"Playbook Step {step_idx}/{total}: {label}...")
+
+    def _on_playbook_finished(self, pb_name: str, target: str, ok: bool, summary: str):
+        self.playbook_progress.hide()
+        self._set_running_state(False)
+        self._save_history_snapshot(pb_name, "execute_command", target)
+        if ok:
+            self._set_status(f"{pb_name} finished. Click 'Analyze Output with AI' for triage.", 5000)
+        else:
+            self._set_status(summary, 4000)
+
+    def run_selected_followup(self):
+        row = self.findings_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "No Row Selected", "Select a finding row in the table first.")
+            return
+        sev_item = self.findings_table.item(row, 0)
+        if sev_item is None:
+            return
+        f = sev_item.data(Qt.ItemDataRole.UserRole) or {}
+        tool = f.get("follow_up_tool") or "nikto_scan"
+        target = f.get("follow_up_target") or f.get("host") or self.target_input.text().strip()
+        if not target:
+            return
+        self.target_input.setText(str(target))
+        idx = self.direct_tool_combo.findData(tool)
+        if idx >= 0:
+            self.direct_tool_combo.setCurrentIndex(idx)
+        self.run_direct_tool()
 
     def analyze_current_raw_output(self):
         raw_text = self.raw_output.toPlainText().strip()
         if not raw_text:
-            QMessageBox.information(self, "No Output", "Wala pang raw output na ia-analyze.")
+            QMessageBox.information(self, "No Output", "No raw output available to analyze.")
             return
         target = self.target_input.text().strip() or "current target"
         snippet = raw_text[-12000:]
         self.prompt_input.setPlainText(
-            f"Analyze this scan output for {target}. Highlight open services, security issues, and next steps:\n\n{snippet}"
+            f"Analyze this scan output for {target}. Highlight open services, security issues, potential exploits, and next steps:\n\n{snippet}"
         )
         self.run_ai_scan()
 
     def stop_current_run(self):
-        if isinstance(self.current_worker, AgentWorker):
+        if isinstance(self.current_worker, (AgentWorker, DirectToolWorker, PlaybookWorker)):
             self.current_worker.request_stop()
         self.approval_bar.hide()
+        self.playbook_progress.hide()
         self.append_raw_log("[!] Stop requested by user.", level="error")
-        self.statusBar().showMessage("Stopping...")
+        self._set_status("Stopping active task...")
 
     def _on_tool_planned(self, fn_name: str, _fn_args: Dict[str, Any], cmd_preview: str):
+        self._streaming_section_index = None
+        self._streaming_buffer = ""
         self.append_raw_log(f"\n[ACTION] {fn_name}: {cmd_preview}", level="cmd")
 
     def _on_approval_requested(self, fn_name: str, _fn_args: Dict[str, Any], cmd_preview: str):
         self.approval_label.setText(f"Approve tool '{fn_name}'?\n{cmd_preview}")
         self.approval_bar.show()
-        self.statusBar().showMessage(f"Waiting for approval: {fn_name}")
+        self._set_status(f"Waiting for approval: {fn_name}")
 
     def _respond_approval(self, approved: bool):
         self.approval_bar.hide()
@@ -897,34 +1505,42 @@ class KaliGuiWindow(QMainWindow):
             self.current_worker.provide_approval(approved)
         self.append_raw_log("[✓] Approved." if approved else "[✗] Declined by user.", level="success" if approved else "error")
 
-    def _on_tool_result(self, fn_name: str, raw_result: Dict[str, Any]):
+    def _on_tool_result(self, fn_name: str, raw_result: Dict[str, Any], target_label: str):
         stdout = (raw_result.get("stdout") or "").strip()
         stderr = (raw_result.get("stderr") or "").strip()
         err = raw_result.get("error")
 
         if stdout:
             self.append_raw_log(stdout, level="stdout")
+            parsed = [f.to_dict() for f in parse_tool_output(fn_name, stdout, target_label)]
+            if parsed:
+                self.current_findings.extend(parsed)
+                self._render_findings_table()
         if stderr:
             self.append_raw_log(f"[stderr]\n{stderr}", level="stderr")
         if err and not stderr:
             self.append_raw_log(f"[error] {err}", level="error")
         if not stdout and not stderr and not err:
-            self.append_raw_log(f"[{fn_name}] Completed with empty output: {json.dumps(raw_result)}", level="info")
+            self.append_raw_log(f"[{fn_name}] Completed: {json.dumps(raw_result)}", level="info")
 
     def _on_ai_finished(self, updated_messages: List[Dict[str, Any]], label_target: str):
         self.messages = updated_messages
+        self.store.save_chat_messages(self.current_engagement_id, self.messages)
+        self._streaming_section_index = None
+        self._streaming_buffer = ""
         self.approval_bar.hide()
         self._set_running_state(False)
-        self._save_history_snapshot("AI Scan", label_target)
-        self.statusBar().showMessage("AI task finished.", 4000)
+        self._save_history_snapshot("AI Scan", "execute_command", label_target)
+        self._set_status("AI task finished.", 4000)
 
     def _on_direct_finished(self, tool_name: str, label_target: str):
         self._set_running_state(False)
-        self._save_history_snapshot(tool_name, label_target)
-        self.statusBar().showMessage(f"Direct {tool_name} finished.", 4000)
+        self._save_history_snapshot(tool_name, tool_name, label_target)
+        self._set_status(f"Direct {tool_name} finished.", 4000)
 
     def closeEvent(self, event):
-        if isinstance(self.current_worker, AgentWorker) and self.current_worker.isRunning():
+        self.save_current_notes()
+        if isinstance(self.current_worker, (AgentWorker, DirectToolWorker, PlaybookWorker)) and self.current_worker.isRunning():
             self.current_worker.request_stop()
             self.current_worker.wait(1500)
         super().closeEvent(event)
