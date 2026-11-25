@@ -12,10 +12,13 @@ __pycache__/
 htmlcov/
 *.cover
 
-# Virtual environments
+# Virtual environments & local tool caches
 .venv/
+.venv*/
 venv/
+venv*/
 env/
+.uv-cache/
 
 # Environment & secrets
 .env
@@ -31,12 +34,15 @@ pyarmor.report.bug
 build/
 dist/
 *.spec
+*.egg
 
 # Logs, local databases, playbooks & scan exports
 *.log
 *.bak
 *.tmp
 *.pid
+*.orig
+*.rej
 *.db
 *.db-wal
 *.db-shm
@@ -47,6 +53,7 @@ prompt*.txt
 playbooks/
 reports/
 logs/
+scratch/
 scan-output*.txt
 analysis*.md
 kali-report*.html
@@ -55,6 +62,7 @@ engagement-*.html
 engagement-*.md
 findings-*.csv
 findings-*.json
+session-*.json
 .kali_ai_history
 
 # IDE / OS files

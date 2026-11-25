@@ -20,5 +20,34 @@ export NVIDIA_MODEL="${NVIDIA_MODEL:-nvidia/nemotron-3-nano-omni-30b-a3b-reasoni
 export NO_PROXY="localhost,127.0.0.1"
 export no_proxy="localhost,127.0.0.1"
 
+# Resolve a Python 3 interpreter that has PySide6 (QtCore/QtGui/QtWidgets) + core deps
+resolve_python() {
+    local candidates=()
+    [ -x "$SCRIPT_DIR/.venv/bin/python3" ] && candidates+=("$SCRIPT_DIR/.venv/bin/python3")
+    if command -v python3 >/dev/null 2>&1; then
+        candidates+=("$(command -v python3)")
+    fi
+    [ -x "/usr/bin/python3" ] && candidates+=("/usr/bin/python3")
+    [ -x "/usr/bin/python3.14" ] && candidates+=("/usr/bin/python3.14")
+
+    local py
+    for py in "${candidates[@]}"; do
+        if "$py" -c "import PySide6.QtCore, PySide6.QtGui, PySide6.QtWidgets, openai, requests" >/dev/null 2>&1; then
+            echo "$py"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if ! PYTHON_BIN="$(resolve_python)"; then
+    echo "ERROR: No Python 3 interpreter found with PySide6.QtCore, PySide6.QtGui, PySide6.QtWidgets, openai, and requests." >&2
+    echo "Fix on Kali/Debian:" >&2
+    echo "  sudo apt install -y python3-pyside6.qtcore python3-pyside6.qtgui python3-pyside6.qtwidgets" >&2
+    echo "Or install into user site-packages:" >&2
+    echo "  /usr/bin/python3 -m pip install --user --break-system-packages PySide6-Essentials openai requests rich" >&2
+    exit 1
+fi
+
 # Launch the Desktop GUI
-python3 "$SCRIPT_DIR/kali-gui.py" "$@"
+exec "$PYTHON_BIN" "$SCRIPT_DIR/kali-gui.py" "$@"

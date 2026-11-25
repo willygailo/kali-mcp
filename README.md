@@ -71,7 +71,7 @@
 | `tests/test_kali_workbench.py` | Deterministic offline `pytest` unit &amp; headless GUI smoke test suite (21 tests) |
 | `pyarmor_runtime_000000/` | PyArmor runtime library required by the 17 obfuscated root Python modules |
 | `build-obfuscated.sh` | Maintainer build script to regenerate protected root `.py` modules from local `src_private/` |
-| `run-gui.sh` / `run-agent.sh` | One-command launchers that ensure `kali-server-mcp` is running |
+| `run-gui.sh` / `run-agent.sh` | One-command launchers with automatic Python 3 dependency resolution (`resolve_python`) that ensure `kali-server-mcp` is running |
 | `kali-mcp-manager.sh` | Control script for `/usr/bin/kali-server-mcp` (`start`, `stop`, `restart`, `status`) |
 | `.env.example` | Template for provider API keys (`NVIDIA_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `CUSTOM_*`) |
 | `CONTRIBUTING.md` | Contribution workflow and verification guidelines |
@@ -124,6 +124,7 @@ NVIDIA_API_KEY="nvapi-your-nvidia-api-key"
 ```bash
 ./run-gui.sh
 ```
+*(Supports `./run-gui.sh --help` and headless verification via `QT_QPA_PLATFORM=offscreen ./run-gui.sh --smoke-test`.)*
 1. Click **`🔑 API Keys`** in the top bar to add, test, and save provider credentials to `.env`.
 2. Enter your **Target** (`IP`, `domain`, or `URL[:port]`) in the left pane.
 3. Choose one of the **9 Quick Presets**, run any of the **6 Automated Recon Playbooks**, or pick any of the **18 Direct Tools**.
@@ -206,6 +207,7 @@ Run the offline unit &amp; headless GUI smoke test suite and linter (no network 
 ```bash
 ruff check src_private tests
 PYTHONPATH=src_private pytest -v tests/test_kali_workbench.py
+QT_QPA_PLATFORM=offscreen KALI_MCP_DB_PATH=/tmp/kali-mcp-smoke.db ./run-gui.sh --smoke-test
 ```
 
 ---
@@ -237,6 +239,12 @@ Maintainers keep editable source modules in the local, gitignored `src_private/`
 
 ## 🔧 Troubleshooting
 
+- **`ModuleNotFoundError: No module named 'PySide6.QtCore'`:** On Kali/Debian, `apt autoremove` can remove Qt bindings while leaving `libpyside6-py3-*`. Both `run-gui.sh` (via `resolve_python`) and `kali-gui.py` check for working Qt modules and print the exact fix:
+  ```bash
+  sudo apt install -y python3-pyside6.qtcore python3-pyside6.qtgui python3-pyside6.qtwidgets
+  # Or install into user site-packages:
+  /usr/bin/python3 -m pip install --user --break-system-packages PySide6-Essentials openai requests rich
+  ```
 - **`kali-server-mcp` Offline:** Run `./kali-mcp-manager.sh restart` and inspect `/tmp/kali-server-mcp.log`.
 - **Missing API Key Error:** Ensure a `.env` file exists in the project root (see `.env.example`), export the matching provider variable (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, or `NVIDIA_API_KEY`), or configure it via **`🔑 API Keys`** in the Desktop GUI.
 - **Localhost Proxy Interference:** Automatically bypassed in `kali_core.py` (`http_session.trust_env = False`) and via `NO_PROXY=localhost,127.0.0.1` in the launcher scripts.
