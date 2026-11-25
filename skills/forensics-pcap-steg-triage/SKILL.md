@@ -12,39 +12,35 @@ allowed_mode: read_only
 
 # Forensics, PCAP, Memory & Steg Triage
 
-## Environment Notes
-- `zsteg` is **NOT installed** on this host — for PNG/BMP LSB inspection use `exiftool`, `binwalk`, or Python `PIL`/`zlib` bitplane checks.
-- Work on read-only copies of evidence files; verify SHA256 hashes (`sha256sum <file>`) before extracting artifacts.
+## Scope & Host Guards
+- `zsteg` NOT installed — use `exiftool`, `binwalk`, or Python `PIL`/`zlib` for PNG/BMP.
+- Record `sha256sum <file>`; work on read-only copies; extract only to `/tmp/<subdir>`.
+- `execute_command` uses `shell=False`: wrap pipes/chains in `bash -c "..."`.
 
-## Step 1: Packet Captures (`.pcap` / `.pcapng`)
-- Protocol hierarchy, conversations, and HTTP/DNS summary:
-  - `tshark -r <cap.pcap> -q -z io,phs`
-  - `tshark -r <cap.pcap> -q -z conv,tcp`
-  - `tshark -r <cap.pcap> -Y "http.request || dns.qry.name" -T fields -e frame.number -e ip.src -e http.host -e http.request.uri -e dns.qry.name`
-- Extract credentials, cleartext streams, or exported objects:
-  - `tshark -r <cap.pcap> -Y "ftp || telnet || http.authorization || ntlmssp"`
-  - `tshark -r <cap.pcap> --export-objects http,/tmp/pcap_http`
-- Quick raw filter fallback: `tcpdump -nn -A -r <cap.pcap> | grep -iE "user|pass|flag|token"`.
+## Tactical Decision Tree
+- **`.pcap`/`.pcapng`**:
+  - `timeout 30s tshark -r <cap.pcap> -q -z io,phs`
+  - `timeout 30s tshark -r <cap.pcap> -Y "http.request || dns.qry.name" -T fields -e frame.number -e ip.src -e http.host -e http.request.uri -e dns.qry.name`
+  - `timeout 30s tshark -r <cap.pcap> -Y "ftp || telnet || http.authorization || ntlmssp"`
+  - Export HTTP: `timeout 30s tshark -r <cap.pcap> --export-objects http,/tmp/pcap_http`
+- **Memory dump (`.raw`/`.vmem`)**:
+  - `timeout 60s vol -f <mem.raw> windows.info`; `windows.pslist`; `windows.cmdline`; `windows.netscan`
+  - `bash -c "timeout 60s vol -f <mem.raw> windows.filescan | grep -iE 'flag|user|pass|kdbx' | head -n 80"`
+- **Image/firmware/archive**:
+  - `exiftool <file>`; `timeout 30s binwalk <file>`
+  - Safe extract: `binwalk -e -C /tmp/bw <file>` or `foremost -i <file> -o /tmp/carved`
+  - JPEG/WAV: `steghide info <file>`; `steghide extract -sf <file> -p "" -xf /tmp/steg.out`
+- **Office/PDF**: `oleid <doc>` + `olevba -a <doc>` (read-only); `exiftool <file.pdf>` + `binwalk <file.pdf>`.
+- **Hashes/creds/ELF carved** -> pivot to `crypto-hash-jwt-triage`, `secrets-vcs-config-audit`, or `binary-re-pwn-triage`.
 
-## Step 2: Memory Forensics (Volatility 3: `vol` / `volshell`)
-- Identify OS/kernel banner and processes:
-  - `vol -f <mem.raw> windows.info` (or `linux.banners` / `banners.Banners`)
-  - `vol -f <mem.raw> windows.pslist` and `windows.pstree`
-  - `vol -f <mem.raw> windows.cmdline` and `windows.netscan`
-- Inspect suspicious memory regions, registry, or files read-only:
-  - `vol -f <mem.raw> windows.filescan | grep -iE "flag|user|pass|kdbx|txt"`
-  - `vol -f <mem.raw> windows.dumpfiles --virtaddr <addr>` (save to `/tmp/vol_out/`).
+## Timeout & False-Positive Guards
+- Use `tcpdump -nn -r`, `timeout 30s-90s` on tshark/vol; never execute macros.
+- `binwalk` FPs: verify carved files with `file` and valid magic headers before trusting.
+- Never modify original evidence files.
 
-## Step 3: Files, Firmware, Images & Steganography
-- Metadata & embedded payload inspection:
-  - `exiftool <file>`
-  - `binwalk <file>` (extract only if safe: `binwalk -e -C /tmp/bw <file>`)
-  - `foremost -i <file> -o /tmp/carved`
-- JPEG/WAV/AU stego check:
-  - `steghide info <file>` (try empty passphrase first: `steghide extract -sf <file> -p "" -xf /tmp/steg.out`)
-
-## Step 4: Office & PDF Document Analysis
-- Detect and decode VBA macros safely without executing:
-  - `oleid <doc>`
-  - `olevba -a <doc>` (deobfuscates macro strings/IOCs read-only).
-- For PDFs: inspect metadata with `exiftool <file.pdf>`, embedded streams with `binwalk`, and strings with `strings <file.pdf>`.
+## Severity & Evidence Criteria
+- **Critical**: Cleartext creds/cookies in PCAP/memory, confirmed C2/malicious macro, backdoored firmware.
+- **High**: Crackable NTLMv2/Krb5 handshake, hidden executable carved, unauthorized exfil stream.
+- **Medium**: Internal hostnames/users leaked via EXIF, DNS, or metadata.
+- **Info**: Benign protocol hierarchy, baseline process list, clean metadata.
+- **Redaction**: Mask passwords, cookies, NTLM hashes, and API keys to `<prefix>...<last4>`.

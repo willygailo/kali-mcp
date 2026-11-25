@@ -12,48 +12,29 @@ allowed_mode: read_only
 
 # AD & Kerberos Read-Only Enumeration
 
-## Trigger & Scope
-- Activate on DC/SMB/LDAP/WinRM ports (`88, 135, 139, 389, 445, 636, 3268, 5985`) or `.htb`/`.local` domain banners.
-- Verify `/etc/hosts` maps `<DC_IP> <dc.domain.local> <domain.local>` so Kerberos SPNs resolve cleanly.
-- Verified binaries only: `nxc`, `netexec`, `enum4linux-ng`, `ldapsearch`, `rpcclient`, `smbmap`, `kerbrute`, `impacket-GetUserSPNs`, `impacket-GetNPUsers`, `impacket-lookupsid`, `impacket-findDelegation`, `bloodhound-python`, `certipy-ad`, `bloodyad`, `evil-winrm`.
+## Scope & Host Guards
+- Map `<DC_IP> <dc.domain.local>` in `/etc/hosts` for Kerberos SPN resolution.
+- Tools: `nxc`, `enum4linux-ng`, `ldapsearch`, `rpcclient`, `smbmap`, `kerbrute`, `impacket-Get{UserSPNs,NPUsers,lookupsid,findDelegation}`, `bloodhound-python`, `certipy-ad`, `bloodyad`, `evil-winrm`.
+- `execute_command` uses `shell=False`: wrap pipes/chains in `bash -c "..."`.
+- No spraying, DCSync, `secretsdump`, or ACL/ADCS writes.
 
-## Step 1: SMB, NetBIOS & Anonymous Discovery
-- Host/signing/SMB version and guest/null checks:
-  - `enum4linux_ng` tool or `enum4linux-ng -A <IP>`
-  - `nxc smb <IP> --shares -u '' -p ''` (or `-u 'guest' -p ''`)
-  - `smbmap -H <IP> -u '' -p ''`
-  - `rpcclient -U "" -N <IP> -c "enumdomusers;enumdomgroups;getdompwinfo"`
-- Inspect readable non-default shares (`SYSVOL`, `NETLOGON`, `Docs`, `Backups`) read-only; look for GPP XML, scripts, or user lists.
+## Tactical Decision Tree
+- **SMB (445)** -> `enum4linux_ng` + `timeout 30s nxc smb <IP> --shares -u '' -p ''`; shares readable -> `timeout 30s smbmap -H <IP> -u '' -p ''`; GPP/creds -> `secrets-vcs-config-audit`
+- **RPC null** -> `timeout 25s rpcclient -U "" -N <IP> -c "enumdomusers;enumdomgroups;getdompwinfo"`
+- **LDAP (389/636)** -> `timeout 25s ldapsearch -x -H ldap://<IP> -s base namingContexts`; `timeout 30s ldapsearch -x -H ldap://<IP> -b "DC=dom,DC=local" "(objectClass=user)" sAMAccountName description`
+- **Kerberos (88) + users** -> `timeout 60s kerbrute userenum -d <dom> --dc <IP> /usr/share/seclists/Usernames/Names/names.txt`; `timeout 30s impacket-GetNPUsers <dom>/ -usersfile /tmp/users.txt -no-pass -dc-ip <IP>`
+- **Domain creds** -> `timeout 45s impacket-GetUserSPNs <dom>/<u>:<p> -dc-ip <IP> -request`; `timeout 90s bloodhound-python -u <u> -p <p> -d <dom> -ns <IP> -c all`; `timeout 60s certipy-ad find -u <u>@<dom> -p <p> -dc-ip <IP> -vulnerable -stdout`
+- **`$krb5asrep$`/`$krb5tgs$`** -> pivot to `crypto-hash-jwt-triage`
+- **WinRM (5985) + creds** -> `timeout 20s nxc winrm <IP> -u <u> -p <p>` -> `privesc-pivoting-transfer`
 
-## Step 2: LDAP / LDAPS Read-Only Queries
-- Base naming context & rootDSE (unauthenticated or with discovered creds):
-  - `ldapsearch -x -H ldap://<IP> -s base namingContexts`
-  - `ldapsearch -x -H ldap://<IP> -b "DC=domain,DC=local" "(objectClass=user)" sAMAccountName description servicePrincipalName`
-- Check `description`, `info`, `userAccountControl`, and password-policy attributes before any credentialed step.
+## Timeout & False-Positive Guards
+- Use `Names/names.txt` (~10k) before `xato-net-10-million`; check lockout via `getdompwinfo`.
+- Enforce `-N`, `-no-pass`, `-Pn`, and `timeout 20s-90s`; ignore `IPC$`/`ADMIN$` noise.
+- Clock skew -> verify time before treating `KRB_AP_ERR_SKEW` as bad account.
 
-## Step 3: Kerberos User, AS-REP & SPN Triage
-- Valid username discovery (non-locking, no password guessing):
-  - `kerbrute userenum -d <domain> --dc <IP> /usr/share/seclists/Usernames/xato-net-10-million-usernames.txt`
-- AS-REP Roastable accounts (pre-auth disabled):
-  - `impacket-GetNPUsers <domain>/ -usersfile users.txt -no-pass -dc-ip <IP>`
-- Kerberoastable SPNs (once a low-priv domain account is known):
-  - `impacket-GetUserSPNs <domain>/<user>:<pass> -dc-ip <IP> -request`
-- RID cycling & delegation audit:
-  - `impacket-lookupsid <domain>/<user>:<pass>@<IP>`
-  - `impacket-findDelegation <domain>/<user>:<pass> -dc-ip <IP>`
-
-## Step 4: BloodHound, ADCS & ACL Mapping (Read-Only)
-- Collect AD graph for offline path analysis:
-  - `bloodhound-python -u <user> -p <pass> -d <domain> -ns <IP> -c all`
-- Inspect ADCS templates & CA misconfigurations (`ESC1`-`ESC13` discovery):
-  - `certipy-ad find -u <user>@<domain> -p <pass> -dc-ip <IP> -vulnerable -stdout`
-- Query ACLs/object attributes without modifying AD objects:
-  - `bloodyad -u <user> -p <pass> -d <domain> --host <DC_FQDN> get object <target_dn>`
-- Validate WinRM access read-only (`id; whoami /all` check only when authorized creds exist):
-  - `nxc winrm <IP> -u <user> -p <pass>`
-  - `evil-winrm -i <IP> -u <user> -p <pass>`
-
-## Pivots & Guardrails
-- If `$krb5asrep$` or `$krb5tgs$` hashes are returned, hand off to `crypto-hash-jwt-triage`.
-- Never run password-spraying, `secretsdump`, DCSync, or ACL/template writes without explicit operator approval.
-- Redact NTLM hashes, Kerberos tickets, and passwords in final summaries.
+## Severity & Evidence Criteria
+- **Critical**: Writable `SYSVOL`, privileged AS-REP/Kerberoastable SPN, ESC1-ESC8, unconstrained non-DC delegation.
+- **High**: SMB signing off + relayable, shares with creds/GPP, Tier-0 ACL write path.
+- **Medium**: Null SMB/LDAP user dump, weak `minPwdLength < 8` or no lockout.
+- **Info**: Naming context, DC hostname/OS, default share list.
+- **Redact**: Mask `$krb5*`, NTLM hashes, passwords to `<prefix>...<last4>`.

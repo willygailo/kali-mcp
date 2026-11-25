@@ -12,35 +12,32 @@ allowed_mode: read_only
 
 # Secrets, VCS & Config Audit (Read-Only)
 
-## Trigger & Scope
-- Activate when web crawling, directory fuzzing, or error traces expose `.git/`, `.env`, `.js.map`, backup configs (`.bak`, `.old`, `.swp`), or high-entropy strings in JS/JSON/YAML.
-- Verified tools: `secret_exposure_scan`, `trufflehog`, `gitleaks`, `js-beautify`, `curl`, `python3`.
+## Scope & Host Guards
+- Verified tools: `secret_exposure_scan`, `endpoint_crawl`, `trufflehog`, `gitleaks`, `js-beautify`, `curl`, `python3`, `git`.
+- `execute_command` uses `shell=False`: wrap pipes/chains in `bash -c "..."`.
+- Strictly read-only: never alter git refs, push, or trigger write/billing API endpoints with found tokens.
 
-## Step 1: Automated Exposure & Local Artifact Scan
-- Remote target probe: run `secret_exposure_scan` against each discovered base URL/VHost.
-- Local downloaded bundles, `.git` mirrors, or repos:
-  - `gitleaks detect --source <dir> --no-git --redact` (or omit `--no-git` on cloned/mirrored `.git` repos).
-  - `trufflehog filesystem <dir> --only-verified` (or omit `--only-verified` in offline labs, then filter manually).
-- Unminify dense JS bundles before regex/entropy inspection:
-  - `js-beautify bundle.min.js -o bundle.pretty.js`
+## Tactical Decision Tree
+- **If web/VHost URL found** -> `secret_exposure_scan` + `timeout 10s curl -sS --max-time 8 <url>/.git/HEAD`
+- **If `.git/HEAD` returns `ref: refs/heads/`**:
+  - Inspect read-only mirror: `timeout 60s gitleaks detect --source <dir> --redact`
+  - History search: `bash -c "git -C <repo> log -p -n 10 --all | grep -iE 'key|secret|token|pass|dsn' | head -n 80"`
+- **If local dir without `.git`**:
+  - `timeout 60s gitleaks detect --source <dir> --no-git --redact`
+  - `timeout 60s trufflehog filesystem <dir> --no-update`
+- **If `.js` / `.js.map` exposed**:
+  - `js-beautify bundle.min.js -o /tmp/bundle.pretty.js`
+  - Extract `sources`/`sourcesContent` with `python3 -c` (`json`), then scan `/tmp/bundle.pretty.js`.
+- **If token/DB URI/JWT found** -> smallest read-only check (`GET /user`, `STS GetCallerIdentity`, `SELECT version();`) or pivot to `crypto-hash-jwt-triage`.
 
-## Step 2: `.git` & `.js.map` Read-Only Inspection
-- Verify `.git` exposure cleanly: `curl -sS <url>/.git/HEAD` (expect `ref: refs/heads/...`) and `<url>/.git/config`.
-- Inspect local/mirrored `.git` objects & history without modifying refs:
-  - `git -C <repo> log --oneline -n 30`
-  - `git -C <repo> log -p -n 10 --all` (pipe to `grep -E` for keys/URIs/passwords).
-- If `.js.map` is accessible, extract `sources` and `sourcesContent` with Python `json` module to inspect unminified source paths, internal URLs, and dev configs.
+## Timeout & False-Positive Guards
+- Enforce `--max-time 8` (`curl`), `--redact` (`gitleaks`), `--no-update` (`trufflehog`), `timeout 60s`, and `git log -n 10`.
+- Require Shannon entropy `> 4.5` (base64/hex `>= 20` chars) + nearby key/secret context.
+- Drop FPs immediately: SRI hashes (`sha256-`/`sha384-`/`sha512-`), bundler chunk hashes, UUIDv4, `data:image/...`, public keys (`pk_test_`, `pk_live_`, reCAPTCHA, public `client_id`, Sentry DSNs), and doc samples (`AKIAIOSFODNN7EXAMPLE`, `YOUR_API_KEY`).
 
-## Step 3: Entropy & False-Positive Filtering
-- Check Shannon entropy (`> 4.5` bits/char for base64/hex tokens >= 20 chars) paired with nearby context (`secret`, `token`, `key`, `dsn`, `password`, `authorization`).
-- **Drop false positives immediately**:
-  - SRI hashes (`sha256-`, `sha384-`, `sha512-`), Webpack/Vite chunk hashes, UUIDv4 IDs.
-  - Base64 fonts/SVGs/images (`data:image/...`), i18n keys, CSS hashes.
-  - Public client IDs (`pk_test_`, `pk_live_`, reCAPTCHA site keys, public OAuth `client_id`, Sentry DSNs) and docs placeholders (`YOUR_API_KEY`, `AKIAIOSFODNN7EXAMPLE`).
-
-## Step 4: Mandatory Redaction & Minimal Liveness Check
-- **Mandatory Redaction**: Never print raw secrets in summaries or reports — mask to `<prefix>...<last4>` (or `****` for short strings).
-- Confirm candidate secrets using only the smallest non-mutating read-only check:
-  - Cloud/SaaS tokens: read-only identity/account call (`STS GetCallerIdentity`, `GET /user`, `auth.test`, `GET /v1/models`).
-  - DB URIs: connect/version/ping handshake only (`SELECT version();` / `PING`) — no table dumps.
-  - JWTs / PEM keys: local decode or fingerprint inspection (`crypto-hash-jwt-triage`).
+## Severity & Evidence Criteria
+- **Critical**: Verified live admin/cloud/DB/signing credential (`.env` root DB URI, AWS `AKIA...` + secret, private PEM, active `ghp_`/`sk_live_`).
+- **High**: Exposed `.git` history or `.js.map` leaking unverified private secrets or privileged internal endpoints.
+- **Medium**: Exposed internal non-secret config (`.git/config` remotes, debug flags, internal paths).
+- **Info**: Public client IDs, SRI hashes, clean negative scans.
+- **Redaction**: NEVER print raw secrets—mask every credential/token/key to `<prefix>...<last4>` (or `****` if `< 8` chars).

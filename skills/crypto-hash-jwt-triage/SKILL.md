@@ -12,36 +12,32 @@ allowed_mode: read_only
 
 # Crypto, Hash & JWT Triage
 
-## Environment Notes
-- `haiti` and `jwt_tool` are **NOT installed** on this host.
-- Use `hashid`, `john`, `hashcat`, `/usr/share/wordlists/rockyou.txt`, and Python 3 stdlib for Base64URL JWT decoding.
-- Perform all cracking and decoding locally/offline on authorized lab artifacts; redact cracked secrets in reports.
+## Scope & Host Guards
+- NOT installed: `haiti`, `jwt_tool`. Use `hashid`, `john` (`john_crack`), `hashcat`, `/usr/share/wordlists/rockyou.txt`, Python 3 stdlib.
+- `execute_command` uses `shell=False`: wrap pipes/chains in `bash -c "..."`.
+- Never send captured hashes or JWTs to external online services.
 
-## Step 1: Hash Identification
-- Classify unknown hash formats before selecting a cracker mode:
-  - `hashid -m -j '<hash>'` (shows both Hashcat `-m` mode and John `--format`).
-- Common lab/HTB prefixes & modes:
-  - `$krb5tgs$23$` -> Hashcat `-m 13100` / John `krb5tgs`
-  - `$krb5asrep$23$` -> Hashcat `-m 18200` / John `krb5asrep`
-  - `$2a$` / `$2b$` / `$2y$` (bcrypt) -> Hashcat `-m 3200` / John `bcrypt`
-  - NTLM (32 hex) -> Hashcat `-m 1000` / John `NT`
-  - NetNTLMv2 (`user::DOMAIN:...`) -> Hashcat `-m 5600` / John `netntlmv2`
+## Tactical Decision Tree
+- **Unknown hash** -> `hashid -m -j '<hash>'` to get Hashcat `-m` and John `--format`:
+  - `$krb5tgs$23$`=`-m 13100`/`krb5tgs`; `$krb5asrep$23$`=`-m 18200`/`krb5asrep`
+  - `$2a$/$2y$`=`-m 3200`/`bcrypt`; NTLM 32hex=`-m 1000`/`NT`; NetNTLMv2=`-m 5600`/`netntlmv2`
+- **Offline crack** -> save to `/tmp/hashes.txt` (`chmod 600`):
+  - `john_crack` tool or `timeout 90s john --format=<fmt> --wordlist=/usr/share/wordlists/rockyou.txt /tmp/hashes.txt`
+  - Check hits: `john --show /tmp/hashes.txt`
+- **Rule pass** -> `timeout 120s hashcat -m <mode> /tmp/hashes.txt /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/best64.rule --force`
+- **SSH key / ZIP / PDF** -> `bash -c "ssh2john <key> > /tmp/k.hash"` (or `zip2john`/`pdf2john`) -> `john`
+- **JWT (`eyJ...`)** -> decode: `python3 -c "import sys,json,base64; p=sys.argv[1].split('.'); d=lambda s: json.loads(base64.urlsafe_b64decode(s+'==='[:(4-len(s)%4)%4])); print(json.dumps({'header':d(p[0]),'payload':d(p[1])},indent=2))" "<JWT>"`
+  - If `HS256` -> `timeout 60s john --format=HMAC-SHA256 --wordlist=/usr/share/wordlists/rockyou.txt /tmp/jwt.txt`
+- **Plaintext creds found** -> pivot to `ad-kerberos-enum`, `infra-db-services-enum`, or `web-api-vhost-recon`.
 
-## Step 2: Authorized Offline Cracking
-- Save hashes to a dedicated lab temp file (`/tmp/hashes.txt`, chmod `600`).
-- **John the Ripper** (`john_crack` tool or CLI):
-  - `john --wordlist=/usr/share/wordlists/rockyou.txt /tmp/hashes.txt`
-  - `john --format=<fmt> --wordlist=/usr/share/wordlists/rockyou.txt /tmp/hashes.txt`
-  - `john --show /tmp/hashes.txt`
-- **Hashcat** (fast GPU/CPU rules when needed):
-  - `hashcat -m <mode> /tmp/hashes.txt /usr/share/wordlists/rockyou.txt --force`
-  - Add `-r /usr/share/hashcat/rules/best64.rule` for quick rule-based coverage.
-- For SSH private keys (`BEGIN OPENSSH PRIVATE KEY`) or ZIP/PDF archives: use `ssh2john`, `zip2john`, or `pdf2john` before `john`.
+## Timeout & False-Positive Guards
+- Cap all `john`/`hashcat` at `60s-120s`; avoid huge rulesets on slow hashes (`bcrypt`, `scrypt`).
+- 32-hex could be MD5, NTLM, or UUID—confirm from context before cracking.
+- Run `john --show` first to avoid re-cracking stale potfile hits.
 
-## Step 3: Local JWT & Base64URL Inspection (Python Stdlib)
-- Decode header & payload offline without network transmission:
-  - `python3 -c "import sys,json,base64; p=sys.argv[1].split('.'); d=lambda s: json.loads(base64.urlsafe_b64decode(s+'==='[:(4-len(s)%4)%4])); print(json.dumps({'header':d(p[0]),'payload':d(p[1])},indent=2))" "<JWT>"`
-- Check JWT security indicators:
-  - Header: `alg` (`none`, `HS256` vs `RS256` key-confusion candidate), `kid` (path/SQLi pattern), `jku`/`x5u`/`jwk` URLs.
-  - Payload: `exp`/`nbf`/`iat` validity, `iss`/`aud`, role/admin/tenant claims, leaked internal IDs or emails.
-- If a weak HMAC secret is suspected on an authorized lab JWT, test offline with `hashcat -m 16500` or `john --format=HMAC-SHA256` against `rockyou.txt`.
+## Severity & Evidence Criteria
+- **Critical**: Cracked privileged cred, weak JWT HMAC secret, `alg: none` accepted, unencrypted private key.
+- **High**: Cracked user/AD hash, JWT missing `exp` or leaking PII, `RS256->HS256` key-confusion signal.
+- **Medium**: Legacy weak hash (`MD5`/`SHA1`/`NTLM`) in storage, excessive token TTL.
+- **Info**: Hash format only, non-sensitive JWT claims (`iss`, `iat`).
+- **Redaction**: Mask cracked secrets, raw hashes, private keys, JWTs to `<prefix>...<last4>`.

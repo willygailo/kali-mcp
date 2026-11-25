@@ -39,7 +39,7 @@
 
 ## ✨ Features
 
-- **Multi-Provider LLM Support:** Switch seamlessly between **ChatGPT / OpenAI**, **Google Gemini**, **Anthropic Claude**, **xAI Grok**, **NVIDIA NIM**, and **Custom / Local** OpenAI-compatible servers (Ollama, vLLM, LM Studio) with automatic key-prefix detection, live connection testing, and context-safe tool output trimming (`trim_tool_output_for_llm`).
+- **Multi-Provider LLM Support:** Switch seamlessly between **ChatGPT / OpenAI**, **Google Gemini**, **Anthropic Claude**, **xAI Grok**, **NVIDIA NIM**, and **Custom / Local** OpenAI-compatible servers (Ollama, vLLM, LM Studio) with automatic key-prefix detection, live connection testing, context-safe tool output trimming (`trim_tool_output_for_llm`), conversation compaction (`compact_messages_for_llm`), duplicate-call `ToolLoopGuard`, and bounded iterations (`KALI_MAX_TOOL_ITERATIONS`, default `16`).
 - **6 Built-in Lab / CTF / HTB Recon Playbooks:** Run end-to-end automated multi-step pipelines from either the Desktop GUI (`playbook_combo`) or CLI (`--run-playbook`, `/run`):
   1. `endpoint_api_hunter` — **Endpoint, JS &amp; API Hunter** (`httpx-toolkit` + `whatweb` → `katana` + spec probe → `ffuf` API/GraphQL fuzz → `arjun` hidden parameters)
   2. `domain_origin_vhost` — **Domain, Real IP / Origin &amp; VHost Recon** (`dig` + `whois` + `openssl` CN/SAN → `wafw00f` + `httpx-toolkit` → `subfinder` → `ffuf` VHost auto-calibration)
@@ -65,15 +65,15 @@
 | `app/kali-gui.py` | PySide6 Desktop GUI (`KaliGuiWindow`) entrypoint with streaming AI, playbooks, audit prompt loader, categorized findings, and reports |
 | `app/kali_gui_*.py` | Modular Desktop GUI components (theme, per-run workers, API keys, `PromptPlaybookDialog` &amp; `SkillSelectorDialog`, skills bar mixin, UI layout, actions) |
 | `app/kali-agent.py` | Interactive &amp; CLI playbook/skill runner (`--list-playbooks`, `--run-playbook`, `--ai-triage`, `--list-skills`, `--skill`, `--auto-skills`, `/playbooks`, `/run`, `/playbook`, `/skills`, `/skill`, `/tools`) |
-| `app/kali_core.py` &amp; `app/kali_core_*.py` | Shared core + helper modules (`builders`, `playbooks`, `providers`): target normalizer, `shell=False`-safe command builder, prompt loader, 6 `PLAYBOOKS`, 18 `DIRECT_TOOLS`, 9 `QUICK_PRESETS`, LLM trimming, and streaming agent loop |
-| `app/kali_skills.py` &amp; `app/kali_mcp_bridge.py` | Zero-dependency `SKILL.md` progressive loader/matcher + optional capability-gated `cve-mcp` / `ghidra-mcp` local stdio MCP bridge |
-| `skills/*/SKILL.md` | 8 built-in read-only Lab / CTF / HTB domain skill modules (AD/Kerberos, Binary/RE, Crypto/JWT, Forensics, Infra/DB, PrivEsc/Pivot, Secrets/VCS, Web/API) |
+| `app/kali_core.py` &amp; `app/kali_core_*.py` | Shared core + helper modules (`builders`, `playbooks`, `providers`, `tactics`): target normalizer, `shell=False`-safe command builder, OODA `SYSTEM_PROMPT`, prompt loader, 6 `PLAYBOOKS`, 18 `DIRECT_TOOLS`, 9 `QUICK_PRESETS`, `ToolLoopGuard`, `compact_messages_for_llm`, dynamic `load_skill` tool, and streaming agent loop |
+| `app/kali_skills.py` &amp; `app/kali_mcp_bridge.py` | Zero-dependency `SKILL.md` progressive loader, URL/port/scheme matcher, `suggest_pivot_skills` + optional capability-gated `cve-mcp` / `ghidra-mcp` local stdio MCP bridge |
+| `skills/*/SKILL.md` | 8 built-in read-only Lab / CTF / HTB domain skill modules with Tactical Decision Trees, Timeout/False-Positive Guards, and Severity/Evidence Criteria (AD/Kerberos, Binary/RE, Crypto/JWT, Forensics, Infra/DB, PrivEsc/Pivot, Secrets/VCS, Web/API) |
 | `integrations/antigravity/kali-mcp-workbench/SKILL.md` | Reusable Antigravity agent skill export for orchestrating Kali MCP Workbench CLI/GUI and safety rules |
 | `app/kali_parsers.py` &amp; `app/kali_parsers_*.py` | Structured parsers + helper modules (`dns`, `secrets`, `web`): DNS/WHOIS/TLS/WAF, subdomains/vhosts, endpoints/params, redacted secrets, enum4linux, nmap, gobuster/dirb, nikto, sqlmap, wpscan, searchsploit |
 | `app/kali_store.py` | SQLite persistence with non-destructive schema migration (`category`, `evidence`, `active_skills_json`), finding deduplication, and category counts |
 | `app/kali_reports.py` | Categorized standalone HTML and Markdown engagement/CTF writeup report generator |
-| `tests/test_kali_workbench.py` | Deterministic offline `pytest` unit &amp; headless GUI smoke test suite (`24` tests) |
-| `app/pyarmor_runtime_000000/` | PyArmor runtime library required by the `20` obfuscated `app/` Python modules |
+| `tests/test_kali_workbench.py` | Deterministic offline `pytest` unit &amp; headless GUI smoke test suite (`29` tests) |
+| `app/pyarmor_runtime_000000/` | PyArmor runtime library required by the `21` obfuscated `app/` Python modules |
 | `scripts/build-obfuscated.sh` | Maintainer build script to regenerate protected `app/*.py` modules from local `src_private/` |
 | `run-gui.sh` / `run-agent.sh` | One-command launchers with automatic Python 3 dependency resolution (`resolve_python`) that ensure `kali-server-mcp` is running |
 | `scripts/kali-mcp-manager.sh` | Control script for `/usr/bin/kali-server-mcp` (`start`, `stop`, `restart`, `status`) |
@@ -199,7 +199,7 @@ Domain skills extend `prompts/prompt.txt` with specialized, read-only methodolog
 | `secrets-vcs-config-audit` | `secrets` | `.env`, `.git`, `.js.map`, `secret_exposure_scan`, `gitleaks`, `trufflehog`, mandatory redaction | `read_only` |
 | `web-api-vhost-recon` | `web` | Ports `80, 443, 3000, 5000, 8000, 8080, 8443, 9000`; `httpx-toolkit`, VHost fuzzing, APIs/GraphQL | `read_only` |
 
-- **Progressive Disclosure &amp; Token Caps:** `app/kali_skills.py` injects only a compact Tier-1 catalog (`render_skill_index`) into `SYSTEM_PROMPT`. Tier-2 tactical instructions (`render_active_skills_block`) load only for active skills, capped at `MAX_ACTIVE_SKILLS = 3`, `MAX_SKILL_BODY_CHARS = 2400` per skill, and `MAX_SKILLS_CHARS = 6000` total.
+- **Progressive Disclosure, Dynamic Pivoting &amp; Token Caps:** `app/kali_skills.py` injects a compact Tier-1 catalog (`render_skill_index`) into `SYSTEM_PROMPT` and infers ports/schemes from target URLs (`_infer_ports_services_from_text`) plus raw output pivot cues (`suggest_pivot_skills`). Tier-2 tactical instructions (`render_active_skills_block`) load for active skills (capped at `MAX_ACTIVE_SKILLS = 3`, `MAX_SKILL_BODY_CHARS = 2400`, `MAX_SKILLS_CHARS = 6000`), and the AI can dynamically invoke the in-process `load_skill` tool mid-turn when new services or artifacts appear.
 - **Local Overrides &amp; Authoring:** Add custom skills under `~/.local/share/kali-mcp/skills/<name>/SKILL.md` or `KALI_MCP_SKILLS_DIR` (plus gitignored `skills/*.local/` and `skills/.cache/`) using YAML frontmatter (`name`, `description`, `category`, `triggers: {ports, services, keywords}`, `recommended_tools`, `allowed_mode: read_only`).
 - **Optional Local MCP Bridge (`cve-mcp` &amp; `ghidra-mcp`):** `app/kali_mcp_bridge.py` detects `cve-mcp` and `ghidra-mcp` on `PATH` and exposes read-only `cve_lookup` and `ghidra_triage` tools to both the LLM and GUI/CLI without requiring `kali-server-mcp`.
 - **Antigravity Skill Export:** Copy or link `integrations/antigravity/kali-mcp-workbench/SKILL.md` to `~/.agents/skills/kali-mcp-workbench/SKILL.md` to invoke Kali MCP Workbench workflows directly from Antigravity.
@@ -262,7 +262,7 @@ QT_QPA_PLATFORM=offscreen KALI_MCP_DB_PATH=/tmp/kali-mcp-smoke.db ./run-gui.sh -
 
 ## 🔒 Code Protection (PyArmor)
 
-All **20** distributed `.py` modules in `app/` are protected with **PyArmor 9.3.0** targeting **Linux x86_64 / Python 3.14** and require the bundled `app/pyarmor_runtime_000000/` directory at runtime.
+All **21** distributed `.py` modules in `app/` are protected with **PyArmor 9.3.0** targeting **Linux x86_64 / Python 3.14** and require the bundled `app/pyarmor_runtime_000000/` directory at runtime.
 
 Maintainers keep editable source modules in the local, gitignored `src_private/` directory and regenerate the protected `app/*.py` files (with a **`28 KB` / `28,672`-byte pre-PyArmor per-file size guard** and built-in leak verification) via:
 
@@ -292,12 +292,12 @@ Maintainers keep editable source modules in the local, gitignored `src_private/`
 
 - [x] Custom wordlist picker and advanced flags panel in the GUI
 - [x] Categorized HTML &amp; Markdown session report export (Executive Summary, Redacted Secrets, Assets, Endpoints, Findings, AI Analysis)
-- [x] Streaming token output for real-time AI responses + context-safe tool output trimming
+- [x] Streaming token output for real-time AI responses, context compaction (`compact_messages_for_llm`), `ToolLoopGuard`, and bounded tool iterations (`KALI_MAX_TOOL_ITERATIONS`)
 - [x] Persistent SQLite lab/CTF workspaces with non-destructive migration &amp; finding deduplication
 - [x] 6 multi-step Lab/CTF/HTB recon playbooks &amp; 18 direct tools across GUI and CLI
 - [x] GUI Audit Prompt / Playbook loader (`prompts/prompt.txt` + Target/Scope/Time budget dialog)
-- [x] Offline `pytest` unit &amp; headless PySide6 GUI smoke test suite
-- [x] Modular Lab/CTF/HTB Domain Skills (`skills/*/SKILL.md`), progressive prompt loader, and optional `cve-mcp`/`ghidra-mcp` bridge
+- [x] Offline `pytest` unit &amp; headless PySide6 GUI smoke test suite (`29` tests)
+- [x] Modular Lab/CTF/HTB Domain Skills (`skills/*/SKILL.md`), progressive &amp; dynamic `load_skill` pivoting, URL/output skill matching, and optional `cve-mcp`/`ghidra-mcp` bridge
 - [ ] Live chunked stdout streaming for long-running scans on `kali-server-mcp`
 
 ---

@@ -8,11 +8,13 @@ kali-agent.py CLI flags, and headless PySide6 Desktop GUI initialization.
 """
 
 import importlib.util
+import json
 import os
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +24,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import kali_core as kc  # noqa: E402
+import kali_core_tactics as kct  # noqa: E402
 import kali_mcp_bridge as kmb  # noqa: E402
 import kali_parsers as kp  # noqa: E402
 import kali_reports as kr  # noqa: E402
@@ -267,6 +270,275 @@ def test_kali_mcp_bridge_capabilities_and_missing_binary():
     assert missing_res["success"] is False
     assert missing_res["return_code"] != 0
     assert "not found" in missing_res["stderr"].lower()
+
+
+# ==================== 1c. Tactics, Loop Guard, Compaction & Skills v2 Tests ====================
+
+
+class _FakeMessage:
+    def __init__(self, content=None, tool_calls=None, reasoning_content=None):
+        self.role = "assistant"
+        self.content = content
+        self.tool_calls = tool_calls
+        self.reasoning_content = reasoning_content
+
+    def model_dump(self, exclude_none=False):
+        data = {"role": self.role, "content": self.content, "tool_calls": self.tool_calls}
+        if exclude_none:
+            return {k: v for k, v in data.items() if v is not None}
+        return data
+
+
+class _FakeCompletionsClient:
+    def __init__(self, responder):
+        self.calls = []
+        self._responder = responder
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        msg = self._responder(len(self.calls) - 1, kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+
+def test_execute_load_skill_tool_and_local_interception(monkeypatch):
+    assert any(t.get("function", {}).get("name") == "load_skill" for t in kc.TOOL_DEFINITIONS)
+
+    valid = kct.execute_load_skill_tool({"skill_name": "ad-kerberos-enum"})
+    assert valid["ok"] is True
+    assert valid["skill"] == "ad-kerberos-enum"
+    assert valid["allowed_mode"] == "read_only"
+    assert isinstance(valid["recommended_tools"], list)
+    assert valid["content"]
+
+    invalid = kct.execute_load_skill_tool({"skill_name": "nonexistent-skill-xyz"})
+    assert invalid["ok"] is False
+    assert "Unknown skill" in invalid["error"]
+    assert "ad-kerberos-enum" in invalid["available_skills"]
+
+    empty = kct.execute_load_skill_tool({})
+    assert empty["ok"] is False
+    assert "required" in empty["error"]
+
+    def _fail_if_remote_called(*args, **kwargs):
+        raise AssertionError("load_skill must be intercepted locally without calling kali-server-mcp")
+
+    monkeypatch.setattr(kc, "call_kali_api", _fail_if_remote_called)
+
+    def _responder(idx, _kwargs):
+        if idx == 0:
+            return _FakeMessage(
+                tool_calls=[
+                    {
+                        "id": "tc_load_1",
+                        "type": "function",
+                        "function": {
+                            "name": "load_skill",
+                            "arguments": json.dumps({"skill_name": "ad-kerberos-enum", "reason": "445/tcp open"}),
+                        },
+                    }
+                ]
+            )
+        return _FakeMessage(content="Loaded AD/Kerberos skill guidance.")
+
+    client = _FakeCompletionsClient(_responder)
+    tool_events = []
+    assistant_msgs = []
+    confirm_calls = []
+
+    cb = kc.AgentCallbacks(
+        on_confirm=lambda name, args, preview: confirm_calls.append(name) or False,
+        on_tool_result=lambda name, res: tool_events.append((name, res)),
+        on_assistant_message=lambda txt: assistant_msgs.append(txt),
+    )
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "scan 10.10.10.5"}]
+
+    kc.run_chat_turn(client, "test-model", messages, auto_approve=False, callbacks=cb, stream=False)
+
+    assert confirm_calls == []
+    assert len(tool_events) == 1
+    assert tool_events[0][0] == "load_skill"
+    assert tool_events[0][1]["ok"] is True
+    assert assistant_msgs == ["Loaded AD/Kerberos skill guidance."]
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    payload = json.loads(tool_msgs[0]["content"])
+    assert payload["ok"] is True
+    assert payload["skill"] == "ad-kerberos-enum"
+
+
+def test_tool_loop_guard_and_max_tool_iterations(monkeypatch):
+    guard = kct.ToolLoopGuard(max_repeats=2)
+    assert guard.check_and_record("nmap_scan", {"target": "10.10.10.5", "ports": "80"}) is None
+    hit = guard.check_and_record("nmap_scan", {"ports": "80", "target": "10.10.10.5"})
+    assert hit is not None and hit["loop_guard"] is True and hit["repeated_calls"] == 2
+    assert guard.check_and_record("nmap_scan", {"target": "10.10.10.5", "ports": "443"}) is None
+
+    assert guard.check_and_record("load_skill", {"skill_name": "web-api-vhost-recon", "reason": "r1"}) is None
+    skill_hit = guard.check_and_record("load_skill", {"skill_name": "web-api-vhost-recon", "reason": "r2"})
+    assert skill_hit is not None and skill_hit["loop_guard"] is True and skill_hit["already_loaded"] is True
+
+    # Duplicate-call blocking inside run_chat_turn
+    api_calls = []
+
+    def _fake_api(fn_name, fn_args, **_kwargs):
+        api_calls.append((fn_name, fn_args))
+        return {"success": True, "stdout": "80/tcp open http"}
+
+    monkeypatch.setattr(kc, "call_kali_api", _fake_api)
+
+    def _dup_responder(idx, _kwargs):
+        if idx < 2:
+            return _FakeMessage(
+                tool_calls=[
+                    {
+                        "id": f"tc_{idx}",
+                        "type": "function",
+                        "function": {"name": "nmap_scan", "arguments": '{"target": "10.10.10.5", "ports": "80"}'},
+                    }
+                ]
+            )
+        return _FakeMessage(content="Done after loop guard.")
+
+    dup_client = _FakeCompletionsClient(_dup_responder)
+    dup_messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "scan"}]
+    kc.run_chat_turn(dup_client, "test-model", dup_messages, auto_approve=True, stream=False)
+
+    assert len(api_calls) == 1
+    dup_tool_msgs = [json.loads(m["content"]) for m in dup_messages if m.get("role") == "tool"]
+    assert len(dup_tool_msgs) == 2
+    assert dup_tool_msgs[1].get("loop_guard") is True
+
+    # MAX_TOOL_ITERATIONS cap + final tools=None summary call
+    monkeypatch.setenv("KALI_MAX_TOOL_ITERATIONS", "2")
+    api_calls.clear()
+
+    def _cap_responder(idx, kwargs):
+        if "tools" in kwargs:
+            return _FakeMessage(
+                tool_calls=[
+                    {
+                        "id": f"tc_cap_{idx}",
+                        "type": "function",
+                        "function": {"name": "nmap_scan", "arguments": json.dumps({"target": "10.10.10.5", "ports": str(80 + idx)})},
+                    }
+                ]
+            )
+        return _FakeMessage(content="Summary after hitting iteration cap.")
+
+    cap_client = _FakeCompletionsClient(_cap_responder)
+    cap_summaries = []
+    cap_messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "enumerate all"}]
+    kc.run_chat_turn(
+        cap_client,
+        "test-model",
+        cap_messages,
+        auto_approve=True,
+        callbacks=kc.AgentCallbacks(on_assistant_message=lambda txt: cap_summaries.append(txt)),
+        stream=False,
+    )
+
+    assert len(api_calls) == 2
+    assert len(cap_client.calls) == 3
+    assert "tools" in cap_client.calls[0]
+    assert "tools" in cap_client.calls[1]
+    assert "tools" not in cap_client.calls[2]
+    assert cap_summaries == ["Summary after hitting iteration cap."]
+
+
+def test_compact_messages_for_llm_non_mutating():
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "start"},
+    ]
+    for ch in ("A", "B", "C", "D", "E", "F"):
+        messages.append({"role": "tool", "tool_call_id": f"tc_{ch}", "content": f"HEAD_{ch}_" + (ch * 3980) + f"_TAIL_{ch}"})
+
+    orig_snapshot = [dict(m) for m in messages]
+
+    # Under budget: nothing compacted
+    under = kct.compact_messages_for_llm(messages, keep_recent_tools=4, max_total_chars=100000)
+    assert under == messages
+    assert under is not messages
+
+    # Over budget: compact older tool outputs (A, B), keep recent 4 (C, D, E, F) intact
+    compacted = kct.compact_messages_for_llm(messages, keep_recent_tools=4, max_total_chars=8000)
+    assert messages == orig_snapshot  # Original dicts never mutated
+
+    compacted_tools = [m for m in compacted if m.get("role") == "tool"]
+    assert len(compacted_tools) == 6
+    for older in compacted_tools[:2]:
+        assert len(older["content"]) <= 1200
+        assert "compacted" in older["content"]
+    for recent in compacted_tools[2:]:
+        assert len(recent["content"]) == len(orig_snapshot[2]["content"])
+        assert "compacted" not in recent["content"]
+
+
+def test_match_skills_url_inference_and_suggest_pivot_skills():
+    skills = ksk.discover_skills([str(REPO_ROOT / "skills")])
+
+    # Turn-1 URL/port/scheme inference with zero prior findings
+    https_matches = ksk.match_skills_from_findings([], target_text="https://portal.example.com/login", skills=skills)
+    assert https_matches and https_matches[0].skill.name == "web-api-vhost-recon"
+    assert "port:443" in https_matches[0].reasons
+    assert "service:https" in https_matches[0].reasons
+
+    db_smb_matches = ksk.match_skills_from_findings(
+        [],
+        prompt_text="Check 10.10.10.5:445 and postgres://db.internal/app",
+        skills=skills,
+    )
+    matched_names = {m.skill.name for m in db_smb_matches}
+    assert {"ad-kerberos-enum", "infra-db-services-enum"}.issubset(matched_names)
+
+    # suggest_pivot_skills detects high-signal artifacts and excludes active skills
+    sample_output = (
+        "200 GET /.git/HEAD\n"
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig\n"
+    )
+    pivots = ksk.suggest_pivot_skills(sample_output, active_skills=[], skills=skills, limit=4)
+    pivot_names = [m.skill.name for m in pivots]
+    assert "secrets-vcs-config-audit" in pivot_names
+    assert "crypto-hash-jwt-triage" in pivot_names
+
+    filtered_pivots = ksk.suggest_pivot_skills(
+        sample_output,
+        active_skills=["crypto-hash-jwt-triage"],
+        skills=skills,
+        limit=4,
+    )
+    filtered_names = [m.skill.name for m in filtered_pivots]
+    assert "crypto-hash-jwt-triage" not in filtered_names
+    assert "secrets-vcs-config-audit" in filtered_names
+    assert ksk.suggest_pivot_skills("", active_skills=[], skills=skills) == []
+
+
+def test_prompts_dir_discovery_and_load_playbook_text(tmp_path):
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    prompt_txt = prompts_dir / "prompt.txt"
+    prompt_txt.write_text("Primary prompt instructions.", encoding="utf-8")
+    htb_md = prompts_dir / "htb_web.md"
+    htb_md.write_text("HTB web checklist.", encoding="utf-8")
+
+    playbooks_dir = tmp_path / "playbooks"
+    playbooks_dir.mkdir()
+    pb_txt = playbooks_dir / "custom.txt"
+    pb_txt.write_text("Custom playbook body.", encoding="utf-8")
+
+    discovered = kc.discover_prompt_files(base_dir=str(tmp_path))
+    assert str(prompt_txt.resolve()) in discovered
+    assert str(htb_md.resolve()) in discovered
+    assert str(pb_txt.resolve()) in discovered
+    assert discovered.index(str(prompt_txt.resolve())) < discovered.index(str(htb_md.resolve()))
+
+    resolved_md, md_text = kc.load_playbook_text("htb_web.md", base_dirs=[str(tmp_path)])
+    assert resolved_md == str(htb_md.resolve())
+    assert md_text == "HTB web checklist."
+
+    with pytest.raises(FileNotFoundError):
+        kc.load_playbook_text("does_not_exist_123.md", base_dirs=[str(tmp_path)])
 
 
 # ==================== 2. kali_parsers Tests ====================

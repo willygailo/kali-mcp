@@ -19,6 +19,8 @@ venv/
 venv*/
 env/
 .uv-cache/
+.ty_cache/
+.swarm/
 
 # Environment & secrets
 .env
@@ -63,7 +65,9 @@ engagement-*.html
 engagement-*.md
 findings-*.csv
 findings-*.json
+findings-*.md
 session-*.json
+*.sarif
 .kali_ai_history
 
 # Skills local overrides
