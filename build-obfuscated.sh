@@ -24,6 +24,15 @@ if [ "${#SRC_FILES[@]}" -eq 0 ]; then
     exit 1
 fi
 
+MAX_PY_BYTES=28672
+for srcf in "${SRC_FILES[@]}"; do
+    sz=$(wc -c < "$srcf")
+    if [ "$sz" -gt "$MAX_PY_BYTES" ]; then
+        echo "ERROR: $(basename "$srcf") is ${sz} bytes (> ${MAX_PY_BYTES} byte pre-PyArmor cap)." >&2
+        exit 1
+    fi
+done
+
 # Use user-specified PYARMOR_HOME, or $HOME/.pyarmor if writable, else /tmp/pyarmor_home
 if [ -z "${PYARMOR_HOME:-}" ]; then
     if [ -n "${HOME:-}" ] \

@@ -22,8 +22,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import kali_core as kc  # noqa: E402
+import kali_mcp_bridge as kmb  # noqa: E402
 import kali_parsers as kp  # noqa: E402
 import kali_reports as kr  # noqa: E402
+import kali_skills as ksk  # noqa: E402
 import kali_store as ks  # noqa: E402
 
 VALID_PARSER_KEYS = {
@@ -171,6 +173,100 @@ def test_load_playbook_text_and_build_system_prompt(tmp_path):
     assert "Scope: HTB Box" in prompt
     assert "Time budget: medium" in prompt
     assert "structured recon checklist" in prompt
+
+
+def test_build_system_prompt_includes_skills_sections():
+    prompt = kc.build_system_prompt(
+        "Follow checklist.",
+        skill_index_text="- ad-kerberos-enum [infrastructure]: AD/SMB triage",
+        active_skills_text="### Skill: ad-kerberos-enum [infrastructure] (mode: read_only)\nRun enum4linux-ng.",
+    )
+    assert "## Available Domain Skills" in prompt
+    assert "ad-kerberos-enum [infrastructure]: AD/SMB triage" in prompt
+    assert "## Active Domain Skills" in prompt
+    assert "Run enum4linux-ng." in prompt
+
+
+# ==================== 1b. kali_skills & kali_mcp_bridge Tests ====================
+
+
+def test_kali_skills_discover_parse_index_match_and_budget():
+    expected_skills = {
+        "ad-kerberos-enum",
+        "binary-re-pwn-triage",
+        "crypto-hash-jwt-triage",
+        "forensics-pcap-steg-triage",
+        "infra-db-services-enum",
+        "privesc-pivoting-transfer",
+        "secrets-vcs-config-audit",
+        "web-api-vhost-recon",
+    }
+    skills = ksk.discover_skills([str(REPO_ROOT / "skills")])
+    assert set(skills.keys()) == expected_skills
+
+    for name, sk in skills.items():
+        assert sk.name == name
+        assert sk.category
+        assert sk.description
+        assert isinstance(sk.ports, list)
+        assert isinstance(sk.services, list)
+        assert isinstance(sk.keywords, list)
+        assert isinstance(sk.recommended_tools, list)
+        assert sk.allowed_mode == "read_only"
+        assert sk.body
+
+    idx = ksk.render_skill_index(skills)
+    for name in expected_skills:
+        assert name in idx
+    assert len(idx) < 2800
+
+    smb_matches = ksk.match_skills_from_findings(
+        [{"port": "445/tcp", "service": "microsoft-ds", "title": "SMB open", "category": "service"}],
+        skills=skills,
+    )
+    assert smb_matches and smb_matches[0].skill.name == "ad-kerberos-enum"
+
+    web_jwt_matches = ksk.match_skills_from_findings(
+        [
+            {"port": "80/tcp", "service": "http", "title": "HTTP endpoint /api/login", "category": "endpoint"},
+            {"port": "-", "service": "secret-scan", "title": "JWT eyJ token in header", "category": "secret"},
+        ],
+        prompt_text="Inspect API vhost and JWT token",
+        skills=skills,
+    )
+    matched_names = {m.skill.name for m in web_jwt_matches}
+    assert {"web-api-vhost-recon", "crypto-hash-jwt-triage"}.issubset(matched_names)
+
+    four_names = [
+        "ad-kerberos-enum",
+        "web-api-vhost-recon",
+        "crypto-hash-jwt-triage",
+        "binary-re-pwn-triage",
+    ]
+    rendered_capped = ksk.render_active_skills_block(four_names, skills)
+    assert rendered_capped.count("### Skill:") <= ksk.MAX_ACTIVE_SKILLS
+    assert "binary-re-pwn-triage" not in rendered_capped
+
+    tight = ksk.render_active_skills_block(["ad-kerberos-enum", "web-api-vhost-recon"], skills, max_chars=700)
+    assert len(tight) <= 700
+    assert "[truncated;" in tight
+
+
+def test_kali_mcp_bridge_capabilities_and_missing_binary():
+    caps = kmb.get_available_local_mcps()
+    assert isinstance(caps, dict)
+    assert set(caps.keys()) == {"cve_mcp", "ghidra_mcp"}
+    assert all(isinstance(v, bool) for v in caps.values())
+
+    empty_res = kmb.run_ghidra_triage("")
+    assert empty_res["success"] is False
+    assert empty_res["return_code"] != 0
+    assert empty_res["stderr"]
+
+    missing_res = kmb.run_ghidra_triage("/nonexistent/path/to/missing_sample_bin")
+    assert missing_res["success"] is False
+    assert missing_res["return_code"] != 0
+    assert "not found" in missing_res["stderr"].lower()
 
 
 # ==================== 2. kali_parsers Tests ====================
@@ -422,6 +518,13 @@ def test_store_legacy_migration_and_deduplication(tmp_path):
     assert counts["secret"] == 1
     assert counts["service"] == 1
 
+    # Engagement skills non-destructive migration & round-trip
+    assert store.get_engagement_skills(1) == []
+    store.set_engagement_skills(1, ["ad-kerberos-enum", "web-api-vhost-recon", "AD-KERBEROS-ENUM"])
+    assert store.get_engagement_skills(1) == ["ad-kerberos-enum", "web-api-vhost-recon"]
+    reopened = ks.ProjectStore(db_path=str(db_path))
+    assert reopened.get_engagement_skills(1) == ["ad-kerberos-enum", "web-api-vhost-recon"]
+
 
 # ==================== 4. kali_reports Tests ====================
 
@@ -528,6 +631,9 @@ def test_cli_list_playbooks_and_help_offline():
     )
     assert help_proc.returncode == 0
     assert "--list-playbooks" in help_proc.stdout
+    assert "--list-skills" in help_proc.stdout
+    assert "--skill" in help_proc.stdout
+    assert "--auto-skills" in help_proc.stdout
     assert "--run-playbook" in help_proc.stdout
     assert "--ai-triage" in help_proc.stdout
 
@@ -549,6 +655,63 @@ def test_cli_list_playbooks_and_help_offline():
     ):
         assert pb_key in list_proc.stdout
 
+    skills_proc = subprocess.run(
+        [sys.executable, str(SRC_DIR / "kali-agent.py"), "--list-skills"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
+    )
+    assert skills_proc.returncode == 0
+    for sk_name in (
+        "ad-kerberos-enum",
+        "binary-re-pwn-triage",
+        "crypto-hash-jwt-triage",
+        "forensics-pcap-steg-triage",
+        "infra-db-services-enum",
+        "privesc-pivoting-transfer",
+        "secrets-vcs-config-audit",
+        "web-api-vhost-recon",
+    ):
+        assert sk_name in skills_proc.stdout
+
+    bad_skill = subprocess.run(
+        [sys.executable, str(SRC_DIR / "kali-agent.py"), "--skill", "nonexistent-skill-xyz"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
+    )
+    assert bad_skill.returncode != 0
+    assert "Unknown skill" in bad_skill.stdout
+
+    agent_spec = importlib.util.spec_from_file_location("kali_agent_mod", str(SRC_DIR / "kali-agent.py"))
+    assert agent_spec is not None and agent_spec.loader is not None
+    agent_mod = importlib.util.module_from_spec(agent_spec)
+    agent_spec.loader.exec_module(agent_mod)
+
+    catalog = ksk.discover_skills([str(REPO_ROOT / "skills")])
+    msgs = [{"role": "system", "content": ""}]
+    active, changed = agent_mod._handle_skill_cmd("ad-kerberos-enum", [], catalog, msgs, [], "", None)
+    assert changed is True and active == ["ad-kerberos-enum"]
+    active, changed = agent_mod._handle_skill_cmd("ad-kerberos-enum", active, catalog, msgs, [], "", None)
+    assert changed is True and active == []
+    active, changed = agent_mod._handle_skill_cmd(
+        "auto",
+        [],
+        catalog,
+        msgs,
+        [{"port": "445/tcp", "service": "smb", "title": "SMB open"}],
+        "10.10.10.5",
+        None,
+    )
+    assert changed is True and "ad-kerberos-enum" in active
+    prompt_txt = agent_mod._compose_prompt(None, catalog, active)
+    assert "## Available Domain Skills" in prompt_txt
+    assert "## Active Domain Skills" in prompt_txt
+    active, changed = agent_mod._handle_skill_cmd("off", active, catalog, msgs, [], "", None)
+    assert changed is True and active == []
+
 
 # ==================== 6. Headless PySide6 GUI Smoke Test ====================
 
@@ -568,9 +731,26 @@ def test_headless_gui_smoke(tmp_path, monkeypatch):
     store = ks.ProjectStore(db_path=str(tmp_path / "gui_smoke.db"))
     win = mod.KaliGuiWindow(store=store)
     try:
+        expected_direct_tools = 18 + int(kc.has_cve_mcp()) + int(kc.has_ghidra_mcp())
         assert win.playbook_combo.count() == 6
-        assert win.direct_tool_combo.count() == 18
+        assert win.direct_tool_combo.count() == expected_direct_tools
         assert win.findings_table.columnCount() == 7
         assert win.category_filter_combo.count() == 8
+        assert len(win.available_skills) == 8
+
+        win.toggle_skill("ad-kerberos-enum")
+        assert "ad-kerberos-enum" in win.active_skills
+        assert "ad-kerberos-enum" in win._effective_system_prompt()
+
+        from kali_gui_dialogs import SkillSelectorDialog
+
+        dlg = SkillSelectorDialog(parent=win, skills=win.available_skills, active_skills=win.active_skills)
+        try:
+            assert dlg.skill_list.count() == 8
+            dlg.search_input.setText("ad-kerberos-enum")
+            assert dlg.skill_list.count() == 1
+            assert dlg.selected_skills == ["ad-kerberos-enum"]
+        finally:
+            dlg.close()
     finally:
         win.close()

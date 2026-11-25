@@ -65,6 +65,21 @@ findings-*.json
 session-*.json
 .kali_ai_history
 
+# Skills local overrides
+skills/*.local/
+skills/*/*.local.md
+skills/.cache/
+
+# Lab / CTF / Ghidra & key safety artifacts
+*.gpr
+*.rep/
+*.pcap
+*.pcapng
+*.potfile
+loot/
+*.pem
+*.key
+
 # IDE / OS files
 .vscode/
 .idea/
