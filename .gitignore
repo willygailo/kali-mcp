@@ -1,4 +1,4 @@
-# Python bytecode & caches
+# Python bytecode, caches & coverage
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,6 +7,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
 
 # Virtual environments
 .venv/
@@ -22,6 +26,7 @@ env/
 src_private/
 .pyarmor/
 pyarmor*.log
+pyarmor*.bug*
 pyarmor.report.bug
 build/
 dist/
@@ -46,6 +51,10 @@ scan-output*.txt
 analysis*.md
 kali-report*.html
 kali-report*.md
+engagement-*.html
+engagement-*.md
+findings-*.csv
+findings-*.json
 .kali_ai_history
 
 # IDE / OS files
