@@ -10,7 +10,7 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
 fi
 
 # Ensure kali-server-mcp is running
-"$SCRIPT_DIR/kali-mcp-manager.sh" start
+"$SCRIPT_DIR/scripts/kali-mcp-manager.sh" start
 
 # Default NVIDIA NIM settings (API keys should live in .env or shell environment)
 export NVIDIA_BASE_URL="${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}"
@@ -50,4 +50,4 @@ if ! PYTHON_BIN="$(resolve_python)"; then
 fi
 
 # Launch the Desktop GUI
-exec "$PYTHON_BIN" "$SCRIPT_DIR/kali-gui.py" "$@"
+exec "$PYTHON_BIN" "$SCRIPT_DIR/app/kali-gui.py" "$@"

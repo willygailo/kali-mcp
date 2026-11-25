@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/src_private"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SRC_DIR="$REPO_ROOT/src_private"
+OUT_DIR="$REPO_ROOT/app"
 
 if ! command -v pyarmor >/dev/null 2>&1; then
     echo "ERROR: pyarmor is not installed or not in PATH." >&2
@@ -48,13 +49,14 @@ mkdir -p "$PYARMOR_HOME"
 export PYARMOR_HOME
 
 echo "[1/4] Cleaning previous pyarmor_runtime_* directories..."
-rm -rf "$SCRIPT_DIR"/pyarmor_runtime_*
+mkdir -p "$OUT_DIR"
+rm -rf "$OUT_DIR"/pyarmor_runtime_*
 
-echo "[2/4] Obfuscating ${#SRC_FILES[@]} Python module(s) from src_private/ -> repo root..."
-pyarmor gen -O "$SCRIPT_DIR" "${SRC_FILES[@]}"
+echo "[2/4] Obfuscating ${#SRC_FILES[@]} Python module(s) from src_private/ -> app/..."
+pyarmor gen -O "$OUT_DIR" "${SRC_FILES[@]}"
 
 echo "[3/4] Restoring executable permissions on CLI/GUI entrypoints..."
-for entry in "$SCRIPT_DIR/kali-gui.py" "$SCRIPT_DIR/kali-agent.py"; do
+for entry in "$OUT_DIR/kali-gui.py" "$OUT_DIR/kali-agent.py"; do
     if [ -f "$entry" ]; then
         chmod +x "$entry"
     fi
@@ -62,17 +64,17 @@ done
 
 echo "[4/4] Running built-in obfuscation leak checks..."
 shopt -s nullglob
-RUNTIME_LIBS=("$SCRIPT_DIR"/pyarmor_runtime_*/pyarmor_runtime.so)
-ROOT_PY_FILES=("$SCRIPT_DIR"/*.py)
+RUNTIME_LIBS=("$OUT_DIR"/pyarmor_runtime_*/pyarmor_runtime.so)
+OUT_PY_FILES=("$OUT_DIR"/*.py)
 shopt -u nullglob
 
 if [ "${#RUNTIME_LIBS[@]}" -eq 0 ]; then
-    echo "ERROR: pyarmor_runtime.so was not generated in $SCRIPT_DIR" >&2
+    echo "ERROR: pyarmor_runtime.so was not generated in $OUT_DIR" >&2
     exit 1
 fi
 
-if [ "${#ROOT_PY_FILES[@]}" -eq 0 ]; then
-    echo "ERROR: No obfuscated .py files found in $SCRIPT_DIR" >&2
+if [ "${#OUT_PY_FILES[@]}" -eq 0 ]; then
+    echo "ERROR: No obfuscated .py files found in $OUT_DIR" >&2
     exit 1
 fi
 
@@ -85,7 +87,7 @@ LEAK_PATTERNS=(
 )
 
 FAIL=0
-for pyf in "${ROOT_PY_FILES[@]}"; do
+for pyf in "${OUT_PY_FILES[@]}"; do
     base="$(basename "$pyf")"
     header="$(head -n 3 "$pyf")"
     if [[ "$header" != *"# Pyarmor "* ]]; then
@@ -109,4 +111,4 @@ if [ "$FAIL" -ne 0 ]; then
     exit 1
 fi
 
-echo "OK: Obfuscated ${#ROOT_PY_FILES[@]} root .py files cleanly with PyArmor (PYARMOR_HOME=$PYARMOR_HOME)."
+echo "OK: Obfuscated ${#OUT_PY_FILES[@]} app .py files cleanly with PyArmor (PYARMOR_HOME=$PYARMOR_HOME)."

@@ -50,6 +50,7 @@ dist/
 *.sqlite3
 prompt.txt
 prompt*.txt
+prompts/
 playbooks/
 reports/
 logs/

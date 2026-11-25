@@ -31,17 +31,17 @@ Siguraduhing pumapasa ang mga sumusunod na checks:
 
 ```bash
 # Lint at syntax check
-ruff check kali_core.py kali-agent.py kali-gui.py
-python3 -m py_compile kali_core.py kali-agent.py kali-gui.py
+ruff check app/kali_core.py app/kali-agent.py app/kali-gui.py
+python3 -m py_compile app/kali_core.py app/kali-agent.py app/kali-gui.py
 
 # CLI check
-python3 kali-agent.py --help
+python3 app/kali-agent.py --help
 
 # Headless GUI smoke test
 QT_QPA_PLATFORM=offscreen python3 -c "
 import sys, importlib.util
 from PySide6.QtWidgets import QApplication
-spec = importlib.util.spec_from_file_location('kali_gui', 'kali-gui.py')
+spec = importlib.util.spec_from_file_location('kali_gui', 'app/kali-gui.py')
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 app = QApplication(sys.argv)

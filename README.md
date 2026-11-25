@@ -47,8 +47,8 @@
   4. `full_htb_ctf_recon` — **Full HTB / Lab Box Recon** (fast TCP top-1000 → `-sCV` service/scripts → web/TLS/DNS/WhatWeb → `enum4linux-ng` SMB/AD → `searchsploit`)
   5. `web_recon` — **Web Recon Pipeline** (Nmap web ports → TLS &amp; HTTP headers → Gobuster dir → Nikto)
   6. `network_audit` — **Network Audit Pipeline** (fast TCP discovery → `-sCV` service/scripts → SMB / Enum4linux)
-- **GUI Audit Prompt &amp; Playbook Loader (`prompt.txt`):** Auto-discovers `prompt.txt` / `prompt*.txt` / `playbooks/*`, lets you load custom methodology files, or open **Configure / Edit** (`PromptPlaybookDialog`) to edit instructions and fill optional `Target`, `Scope`, and `Time budget (easy | medium | hard)` context fields synced into the live AI system prompt.
-- **Modular Lab / CTF / HTB Domain Skills (`skills/*/SKILL.md`):** Ships **8 built-in read-only domain skill packs** with progressive disclosure (compact Tier-1 index in `SYSTEM_PROMPT`, Tier-2 bodies capped at `MAX_ACTIVE_SKILLS = 3`, `MAX_SKILL_BODY_CHARS = 2400`, `MAX_SKILLS_CHARS = 6000`), GUI Domain Skills bar/chips (`SkillSelectorDialog`, finding-based auto-suggestions, per-engagement SQLite persistence), CLI flags &amp; slash commands, optional `cve-mcp`/`ghidra-mcp` local stdio bridge (`kali_mcp_bridge.py`), and an Antigravity skill export (`integrations/antigravity/kali-mcp-workbench/SKILL.md`).
+- **GUI Audit Prompt &amp; Playbook Loader (`prompts/prompt.txt`):** Auto-discovers `prompts/prompt.txt` / `prompts/prompt*.txt` / `playbooks/*`, lets you load custom methodology files, or open **Configure / Edit** (`PromptPlaybookDialog`) to edit instructions and fill optional `Target`, `Scope`, and `Time budget (easy | medium | hard)` context fields synced into the live AI system prompt.
+- **Modular Lab / CTF / HTB Domain Skills (`skills/*/SKILL.md`):** Ships **8 built-in read-only domain skill packs** with progressive disclosure (compact Tier-1 index in `SYSTEM_PROMPT`, Tier-2 bodies capped at `MAX_ACTIVE_SKILLS = 3`, `MAX_SKILL_BODY_CHARS = 2400`, `MAX_SKILLS_CHARS = 6000`), GUI Domain Skills bar/chips (`SkillSelectorDialog`, finding-based auto-suggestions, per-engagement SQLite persistence), CLI flags &amp; slash commands, optional `cve-mcp`/`ghidra-mcp` local stdio bridge (`app/kali_mcp_bridge.py`), and an Antigravity skill export (`integrations/antigravity/kali-mcp-workbench/SKILL.md`).
 - **Categorized Findings, Redacted Secrets &amp; Deduplicated SQLite Store:**
   - Automatically parses outputs into 7 structured categories (`secret`, `vulnerability`, `misconfig`, `endpoint`, `asset`, `service`, `exploit`) with entropy &amp; false-positive filtering (SRI hashes, webpack chunks, data URIs, placeholders, UUIDs, Stripe `pk_`).
   - **Mandatory Secret Redaction:** Raw credentials are always masked (`redact_secret`) before entering `Finding.title`, `Finding.details`, `Finding.evidence`, SQLite storage, GUI tables, or reports.
@@ -62,21 +62,22 @@
 
 | File | Description |
 | :--- | :--- |
-| `kali-gui.py` | PySide6 Desktop GUI (`KaliGuiWindow`) entrypoint with streaming AI, playbooks, audit prompt loader, categorized findings, and reports |
-| `kali_gui_*.py` | Modular Desktop GUI components (theme, per-run workers, API keys, `PromptPlaybookDialog` &amp; `SkillSelectorDialog`, skills bar mixin, UI layout, actions) |
-| `kali-agent.py` | Interactive &amp; CLI playbook/skill runner (`--list-playbooks`, `--run-playbook`, `--ai-triage`, `--list-skills`, `--skill`, `--auto-skills`, `/playbooks`, `/run`, `/playbook`, `/skills`, `/skill`, `/tools`) |
-| `kali_core.py` &amp; `kali_core_*.py` | Shared core + helper modules (`builders`, `playbooks`, `providers`): target normalizer, `shell=False`-safe command builder, prompt loader, 6 `PLAYBOOKS`, 18 `DIRECT_TOOLS`, 9 `QUICK_PRESETS`, LLM trimming, and streaming agent loop |
-| `kali_skills.py` &amp; `kali_mcp_bridge.py` | Zero-dependency `SKILL.md` progressive loader/matcher + optional capability-gated `cve-mcp` / `ghidra-mcp` local stdio MCP bridge |
+| `app/kali-gui.py` | PySide6 Desktop GUI (`KaliGuiWindow`) entrypoint with streaming AI, playbooks, audit prompt loader, categorized findings, and reports |
+| `app/kali_gui_*.py` | Modular Desktop GUI components (theme, per-run workers, API keys, `PromptPlaybookDialog` &amp; `SkillSelectorDialog`, skills bar mixin, UI layout, actions) |
+| `app/kali-agent.py` | Interactive &amp; CLI playbook/skill runner (`--list-playbooks`, `--run-playbook`, `--ai-triage`, `--list-skills`, `--skill`, `--auto-skills`, `/playbooks`, `/run`, `/playbook`, `/skills`, `/skill`, `/tools`) |
+| `app/kali_core.py` &amp; `app/kali_core_*.py` | Shared core + helper modules (`builders`, `playbooks`, `providers`): target normalizer, `shell=False`-safe command builder, prompt loader, 6 `PLAYBOOKS`, 18 `DIRECT_TOOLS`, 9 `QUICK_PRESETS`, LLM trimming, and streaming agent loop |
+| `app/kali_skills.py` &amp; `app/kali_mcp_bridge.py` | Zero-dependency `SKILL.md` progressive loader/matcher + optional capability-gated `cve-mcp` / `ghidra-mcp` local stdio MCP bridge |
 | `skills/*/SKILL.md` | 8 built-in read-only Lab / CTF / HTB domain skill modules (AD/Kerberos, Binary/RE, Crypto/JWT, Forensics, Infra/DB, PrivEsc/Pivot, Secrets/VCS, Web/API) |
 | `integrations/antigravity/kali-mcp-workbench/SKILL.md` | Reusable Antigravity agent skill export for orchestrating Kali MCP Workbench CLI/GUI and safety rules |
-| `kali_parsers.py` &amp; `kali_parsers_*.py` | Structured parsers + helper modules (`dns`, `secrets`, `web`): DNS/WHOIS/TLS/WAF, subdomains/vhosts, endpoints/params, redacted secrets, enum4linux, nmap, gobuster/dirb, nikto, sqlmap, wpscan, searchsploit |
-| `kali_store.py` | SQLite persistence with non-destructive schema migration (`category`, `evidence`, `active_skills_json`), finding deduplication, and category counts |
-| `kali_reports.py` | Categorized standalone HTML and Markdown engagement/CTF writeup report generator |
+| `app/kali_parsers.py` &amp; `app/kali_parsers_*.py` | Structured parsers + helper modules (`dns`, `secrets`, `web`): DNS/WHOIS/TLS/WAF, subdomains/vhosts, endpoints/params, redacted secrets, enum4linux, nmap, gobuster/dirb, nikto, sqlmap, wpscan, searchsploit |
+| `app/kali_store.py` | SQLite persistence with non-destructive schema migration (`category`, `evidence`, `active_skills_json`), finding deduplication, and category counts |
+| `app/kali_reports.py` | Categorized standalone HTML and Markdown engagement/CTF writeup report generator |
 | `tests/test_kali_workbench.py` | Deterministic offline `pytest` unit &amp; headless GUI smoke test suite (`24` tests) |
-| `pyarmor_runtime_000000/` | PyArmor runtime library required by the `20` obfuscated root Python modules |
-| `build-obfuscated.sh` | Maintainer build script to regenerate protected root `.py` modules from local `src_private/` |
+| `app/pyarmor_runtime_000000/` | PyArmor runtime library required by the `20` obfuscated `app/` Python modules |
+| `scripts/build-obfuscated.sh` | Maintainer build script to regenerate protected `app/*.py` modules from local `src_private/` |
 | `run-gui.sh` / `run-agent.sh` | One-command launchers with automatic Python 3 dependency resolution (`resolve_python`) that ensure `kali-server-mcp` is running |
-| `kali-mcp-manager.sh` | Control script for `/usr/bin/kali-server-mcp` (`start`, `stop`, `restart`, `status`) |
+| `scripts/kali-mcp-manager.sh` | Control script for `/usr/bin/kali-server-mcp` (`start`, `stop`, `restart`, `status`) |
+| `prompts/prompt.txt` | Default audit prompt / methodology file auto-discovered by the GUI and CLI |
 | `.env.example` | Template for provider API keys (`NVIDIA_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `CUSTOM_*`) |
 | `CONTRIBUTING.md` | Contribution workflow and verification guidelines |
 
@@ -132,29 +133,29 @@ NVIDIA_API_KEY="nvapi-your-nvidia-api-key"
 1. Click **`🔑 API Keys`** in the top bar to add, test, and save provider credentials to `.env`.
 2. Enter your **Target** (`IP`, `domain`, or `URL[:port]`) in the left pane.
 3. Choose one of the **9 Quick Presets**, run any of the **6 Automated Recon Playbooks**, or pick any of the **18 Core Direct Tools** (+ optional `cve_lookup` / `ghidra_triage` when `cve-mcp`/`ghidra-mcp` are installed).
-4. Optionally select `prompt.txt` (or click **Load...** / **Configure / Edit** for `PromptPlaybookDialog`) in the **Audit Prompt / System Playbook** bar, and toggle up to 3 domain skill packs in the **Domain Skills** bar/chips (**Skills...** opens `SkillSelectorDialog`, and auto-suggested chips appear from discovered ports/services/keywords).
+4. Optionally select `prompts/prompt.txt` (or click **Load...** / **Configure / Edit** for `PromptPlaybookDialog`) in the **Audit Prompt / System Playbook** bar, and toggle up to 3 domain skill packs in the **Domain Skills** bar/chips (**Skills...** opens `SkillSelectorDialog`, and auto-suggested chips appear from discovered ports/services/keywords).
 5. Inspect live raw output + streaming AI analysis side-by-side in **Tab 1**, filter/copy redacted evidence &amp; trigger follow-ups in **Tab 2 (Findings &amp; Assets)**, and export categorized HTML or Markdown reports in **Tab 3**.
 
 ### 💻 Terminal CLI Agent &amp; Playbook Runner
 - **List all 6 built-in recon playbooks or 8 modular domain skills (works offline, no API key needed):**
   ```bash
-  ./kali-agent.py --list-playbooks
-  ./kali-agent.py --list-skills
+  ./app/kali-agent.py --list-playbooks
+  ./app/kali-agent.py --list-skills
   ```
 - **Run a multi-step recon playbook directly from the CLI (with optional skill selection / auto-matching):**
   ```bash
-  ./kali-agent.py --run-playbook endpoint_api_hunter --target https://lab.target.local
-  ./kali-agent.py --run-playbook full_htb_ctf_recon --target 10.10.10.5 --ports 22,80,445 --ai-triage --auto-skills
+  ./app/kali-agent.py --run-playbook endpoint_api_hunter --target https://lab.target.local
+  ./app/kali-agent.py --run-playbook full_htb_ctf_recon --target 10.10.10.5 --ports 22,80,445 --ai-triage --auto-skills
   ```
 - **Interactive AI chat with slash commands (`/playbooks`, `/run`, `/playbook`, `/skills`, `/skill`, `/tools`, `/help`):**
   ```bash
   ./run-agent.sh
-  ./run-agent.sh --playbook prompt.txt --skill ad-kerberos-enum --skill web-api-vhost-recon
-  ./run-agent.sh --playbook prompt.txt --auto-skills "Audit 10.10.10.5"
+  ./run-agent.sh --playbook prompts/prompt.txt --skill ad-kerberos-enum --skill web-api-vhost-recon
+  ./run-agent.sh --playbook prompts/prompt.txt --auto-skills "Audit 10.10.10.5"
   ```
 
 <details>
-<summary>All CLI Options &amp; Interactive Slash Commands for <code>kali-agent.py</code></summary>
+<summary>All CLI Options &amp; Interactive Slash Commands for <code>app/kali-agent.py</code></summary>
 
 | Flag / Command | Description |
 | :--- | :--- |
@@ -168,7 +169,7 @@ NVIDIA_API_KEY="nvapi-your-nvidia-api-key"
 | `--ports PORTS` | Custom ports (e.g., `80,443` or `1-1000`) |
 | `--extra-args FLAGS` | Extra flags passed to playbook tools |
 | `--ai-triage` | Feed `--run-playbook` parsed findings to the LLM for prioritized triage |
-| `--playbook FILE` | Load a custom audit prompt/playbook file (e.g., `prompt.txt`) |
+| `--playbook FILE` | Load a custom audit prompt/playbook file (e.g., `prompts/prompt.txt`) |
 | `--provider` / `--model` / `--api-key` / `--base-url` | Select or override LLM provider configuration |
 | `--yes`, `-y` | Auto-approve tool calls without confirmation prompts |
 | `/playbooks` | *(In-chat)* List all 6 built-in recon pipelines |
@@ -185,7 +186,7 @@ NVIDIA_API_KEY="nvapi-your-nvidia-api-key"
 
 ## 🧩 Modular Lab / CTF / HTB Domain Skills (`skills/*/SKILL.md`)
 
-Domain skills extend `prompt.txt` with specialized, read-only methodology without bloating the LLM context window:
+Domain skills extend `prompts/prompt.txt` with specialized, read-only methodology without bloating the LLM context window:
 
 | Skill | Category | Primary Triggers &amp; Scope | Mode |
 | :--- | :--- | :--- | :--- |
@@ -198,9 +199,9 @@ Domain skills extend `prompt.txt` with specialized, read-only methodology withou
 | `secrets-vcs-config-audit` | `secrets` | `.env`, `.git`, `.js.map`, `secret_exposure_scan`, `gitleaks`, `trufflehog`, mandatory redaction | `read_only` |
 | `web-api-vhost-recon` | `web` | Ports `80, 443, 3000, 5000, 8000, 8080, 8443, 9000`; `httpx-toolkit`, VHost fuzzing, APIs/GraphQL | `read_only` |
 
-- **Progressive Disclosure &amp; Token Caps:** `kali_skills.py` injects only a compact Tier-1 catalog (`render_skill_index`) into `SYSTEM_PROMPT`. Tier-2 tactical instructions (`render_active_skills_block`) load only for active skills, capped at `MAX_ACTIVE_SKILLS = 3`, `MAX_SKILL_BODY_CHARS = 2400` per skill, and `MAX_SKILLS_CHARS = 6000` total.
+- **Progressive Disclosure &amp; Token Caps:** `app/kali_skills.py` injects only a compact Tier-1 catalog (`render_skill_index`) into `SYSTEM_PROMPT`. Tier-2 tactical instructions (`render_active_skills_block`) load only for active skills, capped at `MAX_ACTIVE_SKILLS = 3`, `MAX_SKILL_BODY_CHARS = 2400` per skill, and `MAX_SKILLS_CHARS = 6000` total.
 - **Local Overrides &amp; Authoring:** Add custom skills under `~/.local/share/kali-mcp/skills/<name>/SKILL.md` or `KALI_MCP_SKILLS_DIR` (plus gitignored `skills/*.local/` and `skills/.cache/`) using YAML frontmatter (`name`, `description`, `category`, `triggers: {ports, services, keywords}`, `recommended_tools`, `allowed_mode: read_only`).
-- **Optional Local MCP Bridge (`cve-mcp` &amp; `ghidra-mcp`):** `kali_mcp_bridge.py` detects `cve-mcp` and `ghidra-mcp` on `PATH` and exposes read-only `cve_lookup` and `ghidra_triage` tools to both the LLM and GUI/CLI without requiring `kali-server-mcp`.
+- **Optional Local MCP Bridge (`cve-mcp` &amp; `ghidra-mcp`):** `app/kali_mcp_bridge.py` detects `cve-mcp` and `ghidra-mcp` on `PATH` and exposes read-only `cve_lookup` and `ghidra_triage` tools to both the LLM and GUI/CLI without requiring `kali-server-mcp`.
 - **Antigravity Skill Export:** Copy or link `integrations/antigravity/kali-mcp-workbench/SKILL.md` to `~/.agents/skills/kali-mcp-workbench/SKILL.md` to invoke Kali MCP Workbench workflows directly from Antigravity.
 
 ---
@@ -227,8 +228,8 @@ Domain skills extend `prompt.txt` with specialized, read-only methodology withou
 | `tls_dns` | TLS &amp; DNS Quick Check | `/api/command` (`openssl s_client`, `curl`, `dig`) |
 | `searchsploit` | Searchsploit Exploit-DB Lookup | `/api/command` (`searchsploit --json`) |
 | `execute_command` | Raw Shell Command | `/api/command` (`bash -c`) |
-| `cve_lookup` | CVE Lookup (`cve-mcp`, optional) | Local stdio MCP (`kali_mcp_bridge.py`) |
-| `ghidra_triage` | Ghidra Headless Binary Triage (`ghidra-mcp`, optional) | Local stdio MCP (`kali_mcp_bridge.py`) |
+| `cve_lookup` | CVE Lookup (`cve-mcp`, optional) | Local stdio MCP (`app/kali_mcp_bridge.py`) |
+| `ghidra_triage` | Ghidra Headless Binary Triage (`ghidra-mcp`, optional) | Local stdio MCP (`app/kali_mcp_bridge.py`) |
 
 Additional MCP endpoints available to the AI agent: `hydra_attack`, `john_crack`, and `metasploit_run`.
 
@@ -251,39 +252,39 @@ QT_QPA_PLATFORM=offscreen KALI_MCP_DB_PATH=/tmp/kali-mcp-smoke.db ./run-gui.sh -
 `kali-server-mcp` listens on `http://127.0.0.1:5000` (logs at `/tmp/kali-server-mcp.log`):
 
 ```bash
-./kali-mcp-manager.sh status   # Check if running and healthy
-./kali-mcp-manager.sh start    # Start the background server
-./kali-mcp-manager.sh restart  # Restart the server
-./kali-mcp-manager.sh stop     # Stop the server
+./scripts/kali-mcp-manager.sh status   # Check if running and healthy
+./scripts/kali-mcp-manager.sh start    # Start the background server
+./scripts/kali-mcp-manager.sh restart  # Restart the server
+./scripts/kali-mcp-manager.sh stop     # Stop the server
 ```
 
 ---
 
 ## 🔒 Code Protection (PyArmor)
 
-All **20** distributed `.py` modules in the repository root are protected with **PyArmor 9.3.0** targeting **Linux x86_64 / Python 3.14** and require the bundled `pyarmor_runtime_000000/` directory at runtime.
+All **20** distributed `.py` modules in `app/` are protected with **PyArmor 9.3.0** targeting **Linux x86_64 / Python 3.14** and require the bundled `app/pyarmor_runtime_000000/` directory at runtime.
 
-Maintainers keep editable source modules in the local, gitignored `src_private/` directory and regenerate the protected root `.py` files (with a **`28 KB` / `28,672`-byte pre-PyArmor per-file size guard** and built-in leak verification) via:
+Maintainers keep editable source modules in the local, gitignored `src_private/` directory and regenerate the protected `app/*.py` files (with a **`28 KB` / `28,672`-byte pre-PyArmor per-file size guard** and built-in leak verification) via:
 
 ```bash
-./build-obfuscated.sh
+./scripts/build-obfuscated.sh
 ```
 
 ---
 
 ## 🔧 Troubleshooting
 
-- **`ModuleNotFoundError: No module named 'PySide6.QtCore'`:** On Kali/Debian, `apt autoremove` can remove Qt bindings while leaving `libpyside6-py3-*`. Both `run-gui.sh` (via `resolve_python`) and `kali-gui.py` check for working Qt modules and print the exact fix:
+- **`ModuleNotFoundError: No module named 'PySide6.QtCore'`:** On Kali/Debian, `apt autoremove` can remove Qt bindings while leaving `libpyside6-py3-*`. Both `run-gui.sh` (via `resolve_python`) and `app/kali-gui.py` check for working Qt modules and print the exact fix:
   ```bash
   sudo apt install -y python3-pyside6.qtcore python3-pyside6.qtgui python3-pyside6.qtwidgets
   # Or install into user site-packages:
   /usr/bin/python3 -m pip install --user --break-system-packages PySide6-Essentials openai requests rich
   ```
-- **`kali-server-mcp` Offline:** Run `./kali-mcp-manager.sh restart` and inspect `/tmp/kali-server-mcp.log`.
+- **`kali-server-mcp` Offline:** Run `./scripts/kali-mcp-manager.sh restart` and inspect `/tmp/kali-server-mcp.log`.
 - **Missing API Key Error:** Ensure a `.env` file exists in the project root (see `.env.example`), export the matching provider variable (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, or `NVIDIA_API_KEY`), or configure it via **`🔑 API Keys`** in the Desktop GUI.
-- **Localhost Proxy Interference:** Automatically bypassed in `kali_core.py` (`http_session.trust_env = False`) and via `NO_PROXY=localhost,127.0.0.1` in the launcher scripts.
+- **Localhost Proxy Interference:** Automatically bypassed in `app/kali_core.py` (`http_session.trust_env = False`) and via `NO_PROXY=localhost,127.0.0.1` in the launcher scripts.
 - **ProjectDiscovery `httpx` vs Python `httpx`:** Kali ships ProjectDiscovery's HTTP prober as `/usr/bin/httpx-toolkit`; all built-in playbooks automatically invoke `httpx-toolkit`.
-- **IDE Import Warnings (`kali_core` / `PySide6`):** Point your editor's Python interpreter to `/usr/bin/python3` and set `search-path = ["src_private"]` in your local `pyrefly.toml` (gitignored) so static analysis inspects readable sources instead of obfuscated root modules.
+- **IDE Import Warnings (`kali_core` / `PySide6`):** Point your editor's Python interpreter to `/usr/bin/python3` and set `search-path = ["src_private"]` in your local `pyrefly.toml` (gitignored) so static analysis inspects readable sources instead of obfuscated `app/` modules.
 
 ---
 
@@ -294,7 +295,7 @@ Maintainers keep editable source modules in the local, gitignored `src_private/`
 - [x] Streaming token output for real-time AI responses + context-safe tool output trimming
 - [x] Persistent SQLite lab/CTF workspaces with non-destructive migration &amp; finding deduplication
 - [x] 6 multi-step Lab/CTF/HTB recon playbooks &amp; 18 direct tools across GUI and CLI
-- [x] GUI Audit Prompt / Playbook loader (`prompt.txt` + Target/Scope/Time budget dialog)
+- [x] GUI Audit Prompt / Playbook loader (`prompts/prompt.txt` + Target/Scope/Time budget dialog)
 - [x] Offline `pytest` unit &amp; headless PySide6 GUI smoke test suite
 - [x] Modular Lab/CTF/HTB Domain Skills (`skills/*/SKILL.md`), progressive prompt loader, and optional `cve-mcp`/`ghidra-mcp` bridge
 - [ ] Live chunked stdout streaming for long-running scans on `kali-server-mcp`
